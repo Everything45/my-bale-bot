@@ -1,83 +1,96 @@
 <?php
-declare(strict_types=1);
+// src/bale_api.php
+require_once __DIR__ . '/config.php';
 
-function apiPost(string $method, array $payload): ?array {
-    $url = 'https://tapi.bale.ai/bot' . BOT_TOKEN . '/' . $method;
+function apiPost(string $method, array $payload): array {
+    $url = BALE_API_BASE . '/' . $method;
     $ch = curl_init($url);
     curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => 10,
+        CURLOPT_TIMEOUT        => 5,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_SSL_VERIFYPEER => true,
     ]);
-    $res = curl_exec($ch);
+    
+    $raw   = curl_exec($ch);
+    $errno = curl_errno($ch);
+    $error = curl_error($ch);
+    $http  = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    if ($res === false) {
-        return null;
+
+    if ($errno !== 0) {
+        return ['ok' => false, 'http_code' => $http, 'curl_error' => $error];
     }
-    $decoded = json_decode($res, true);
-    return is_array($decoded) ? $decoded : null;
+
+    $decoded = json_decode((string)$raw, true);
+    if (!is_array($decoded)) {
+        return ['ok' => false, 'http_code' => $http, 'raw' => $raw];
+    }
+    $decoded['http_code'] = $http;
+    return $decoded;
 }
 
-function sendWithRetry($chatId, string $text, int $maxRetries = 2): void {
-    for ($i = 0; $i < $maxRetries; $i++) {
-        $res = apiPost('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'Markdown',
-        ]);
-        if ($res !== null && !empty($res['ok'])) {
-            return;
+function sendWithRetry(string $method, array $payload, int $maxAttempts = 2): array {
+    $last = ['ok' => false];
+    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        $last = apiPost($method, $payload);
+        if (!empty($last['ok'])) {
+            return $last;
         }
-        usleep(200000); // 0.2s wait
+        if ($attempt < $maxAttempts) {
+            usleep(150000);
+        }
     }
-
-    // Fallback: ارسال بدون Markdown در صورت خطای کاراکترهای خاص
-    $plainText = str_replace(['*', '`', '_', '[', ']'], '', $text);
-    apiPost('sendMessage', [
-        'chat_id' => $chatId,
-        'text' => $plainText,
-    ]);
+    return $last;
 }
 
-function sendPlainText($chatId, string $text): void {
-    if (!$chatId) {
-        return;
-    }
-    sendWithRetry($chatId, $text);
-}
-
-function sendMessageWithKeyboard($chatId, string $text, ?array $replyMarkup = null): void {
-    if (!$chatId) {
-        return;
-    }
+function sendPlainText($chatId, string $text, $replyToMessageId = null): array {
     $payload = [
-        'chat_id' => $chatId,
-        'text' => $text,
-        'parse_mode' => 'Markdown',
+        'chat_id'    => $chatId,
+        'text'       => $text,
+        'parse_mode' => 'Markdown' // فعال‌سازی قابلیت بولد و کپی با کلیک
     ];
-    if ($replyMarkup !== null) {
-        $payload['reply_markup'] = $replyMarkup;
+    if ($replyToMessageId !== null) {
+        $payload['reply_to_message_id'] = $replyToMessageId;
     }
-
-    $res = apiPost('sendMessage', $payload);
-    if ($res === null || empty($res['ok'])) {
+    $res = sendWithRetry('sendMessage', $payload);
+    
+    // اگر متنی مثل یوزرنیم دارای کاراکتر خاص (_) بود و خطا داد، به صورت ساده ارسال شود
+    if (empty($res['ok'])) {
         unset($payload['parse_mode']);
-        $payload['text'] = str_replace(['*', '`', '_', '[', ']'], '', $text);
-        apiPost('sendMessage', $payload);
+        $res = sendWithRetry('sendMessage', $payload);
     }
+    return $res;
 }
 
-function answerCallbackQuery($callbackId, string $text = '', bool $showAlert = false): void {
-    if (!$callbackId) {
-        return;
+function sendMessageWithKeyboard($chatId, string $text, array $inlineKeyboard): array {
+    $payload = [
+        'chat_id'      => $chatId,
+        'text'         => $text,
+        'parse_mode'   => 'Markdown', // فعال‌سازی قابلیت بولد و کپی با کلیک
+        'reply_markup' => [
+            'inline_keyboard' => $inlineKeyboard
+        ]
+    ];
+    $res = sendWithRetry('sendMessage', $payload);
+    
+    if (empty($res['ok'])) {
+        unset($payload['parse_mode']);
+        $res = sendWithRetry('sendMessage', $payload);
     }
-    $payload = ['callback_query_id' => $callbackId];
+    return $res;
+}
+
+function answerCallbackQuery(string $callbackQueryId, string $text = '', bool $showAlert = false): array {
+    $payload = [
+        'callback_query_id' => $callbackQueryId,
+        'show_alert'        => $showAlert
+    ];
     if ($text !== '') {
         $payload['text'] = $text;
-        $payload['show_alert'] = $showAlert;
     }
-    apiPost('answerCallbackQuery', $payload);
+    return apiPost('answerCallbackQuery', $payload);
 }
