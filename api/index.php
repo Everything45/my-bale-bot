@@ -27,12 +27,12 @@ if ($input === '' || $_SERVER['REQUEST_METHOD'] === 'GET') {
         $host  = $_SERVER['HTTP_HOST'] ?? '';
         $webhookUrl = $proto . '://' . $host . '/api/index.php';
         $res = apiPost('setWebhook', ['url' => $webhookUrl]);
-        
+
         if (!headers_sent()) {
             header('Content-Type: application/json; charset=utf-8');
             http_response_code(200);
         }
-        
+
         echo json_encode([
             'status' => 'Webhook Configuration Attempt',
             'webhook_url' => $webhookUrl,
@@ -77,72 +77,91 @@ if (isset($update['message']['text'])) {
     $chat       = $message['chat'] ?? [];
     $chatId     = $chat['id'] ?? null;
     $chatType   = $chat['type'] ?? '';
+    $fromId     = $message['from']['id'] ?? null;
     $senderName = $message['from']['first_name'] ?? 'کاربر';
 
     [$command, $args] = parseCommand($message['text']);
 
-    if ($command === 'start' && $chatType === 'private' && $chatId) {
-        sendStartMenu($chatId, $senderName);
-        if (!headers_sent()) {
-            http_response_code(200);
+    if ($command !== null) {
+        // دستورات ویژه سازنده ربات (بدون نیاز به بررسی عضویت اجباری)
+        if (isBotOwner($fromId)) {
+            if ($command === 'admin') {
+                sendOwnerHelp($chatId);
+                finishRequest();
+            }
+            if ($command === 'mychannels') {
+                handleMyChannels($chat, $message);
+                finishRequest();
+            }
+            if ($command === 'addforce') {
+                handleAddForceChannel($chatId, (string)$args);
+                finishRequest();
+            }
+            if ($command === 'delforce') {
+                handleDelForceChannel($chatId, (string)$args);
+                finishRequest();
+            }
+            if ($command === 'listforce') {
+                handleListForceChannels($chatId);
+                finishRequest();
+            }
+            if ($command === 'setsponsor') {
+                handleSetMetaText($chatId, 'bot:sponsor_text', (string)$args, 'اسپانسر');
+                finishRequest();
+            }
+            if ($command === 'setdonate') {
+                handleSetMetaText($chatId, 'bot:donate_text', (string)$args, 'حمایت مالی');
+                finishRequest();
+            }
         }
-        exit;
-    }
 
-    if ($command === 'help') {
-        sendHelp($chatId);
-        if (!headers_sent()) {
-            http_response_code(200);
+        // اگر کاربر در چت خصوصی دوباره استارت زد، ۲ کانال تصادفی جدید برایش انتخاب شود
+        if ($command === 'start' && $chatType === 'private' && $fromId && !isBotOwner($fromId)) {
+            assignRandomForceChannels($fromId, true);
         }
-        exit;
-    }
 
-    if ($command === 'connect') {
-        handleConnect($chat, $message, $args);
-        if (!headers_sent()) {
-            http_response_code(200);
+        // بررسی عضویت اجباری برای تمام کاربران و ادمین‌ها پیش از اجرای دستورات
+        if ($fromId && !isBotOwner($fromId)) {
+            if (!checkUserForceJoin($fromId, $chatId, $chatType)) {
+                finishRequest();
+            }
         }
-        exit;
-    }
 
-    if ($command === 'disconnect') {
-        handleDisconnect($chat, $message);
-        if (!headers_sent()) {
-            http_response_code(200);
+        // اجرای دستورات عمومی
+        if ($command === 'start' && $chatType === 'private' && $chatId) {
+            sendStartMenu($chatId, $senderName);
+            finishRequest();
         }
-        exit;
-    }
 
-    if ($command === 'status') {
-        handleStatus($chat);
-        if (!headers_sent()) {
-            http_response_code(200);
+        if ($command === 'help') {
+            sendHelp($chatId);
+            finishRequest();
         }
-        exit;
-    }
 
-    if ($command === 'mychannels') {
-        handleMyChannels($chat, $message);
-        if (!headers_sent()) {
-            http_response_code(200);
+        if ($command === 'connect') {
+            handleConnect($chat, $message, $args);
+            finishRequest();
         }
-        exit;
-    }
 
-    if ($command === 'stats') {
-        handleStats($chat);
-        if (!headers_sent()) {
-            http_response_code(200);
+        if ($command === 'disconnect') {
+            handleDisconnect($chat, $message);
+            finishRequest();
         }
-        exit;
-    }
 
-    if ($command === 'settings') {
-        sendSettingsMenu($chatId);
-        if (!headers_sent()) {
-            http_response_code(200);
+        if ($command === 'status') {
+            handleStatus($chat);
+            finishRequest();
         }
-        exit;
+
+        if ($command === 'stats') {
+            handleStats($chat);
+            finishRequest();
+        }
+
+        if ($command === 'settings') {
+            sendSettingsMenu($chatId);
+            finishRequest();
+        }
     }
 }
 
@@ -194,14 +213,307 @@ if (isset($update['message']['new_chat_members'])) {
     }
 }
 
-if (!headers_sent()) {
-    http_response_code(200);
-}
-echo 'OK';
-exit;
+finishRequest();
 
 // ====================================================
-// توابع اصلی منوها و دستورات
+// توابع کمکی پایان درخواست و بررسی سازنده
+// ====================================================
+
+function finishRequest(): void
+{
+    if (!headers_sent()) {
+        http_response_code(200);
+    }
+    echo 'OK';
+    exit;
+}
+
+function isBotOwner($userId): bool
+{
+    if (!$userId || BOT_OWNER_ID === '') return false;
+    return (string)$userId === (string)BOT_OWNER_ID;
+}
+
+// ====================================================
+// سیستم عضویت اجباری تصادفی (حداکثر ۲ کانال)
+// ====================================================
+
+function getForceChannelsPool(): array
+{
+    $raw = redisGet('bot:force_channels_pool');
+    if (!$raw) return [];
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function saveForceChannelsPool(array $pool): void
+{
+    redisSet('bot:force_channels_pool', json_encode(array_values($pool), JSON_UNESCAPED_UNICODE));
+}
+
+function assignRandomForceChannels($userId, bool $forceReassign = false): array
+{
+    $pool = getForceChannelsPool();
+    if (empty($pool)) {
+        return [];
+    }
+
+    $poolMap = [];
+    foreach ($pool as $ch) {
+        if (!empty($ch['chat_id'])) {
+            $poolMap[(string)$ch['chat_id']] = $ch;
+        }
+    }
+
+    if (!$forceReassign) {
+        $existingRaw = redisGet('user:force_assigned:' . $userId);
+        if ($existingRaw) {
+            $existingIds = json_decode($existingRaw, true);
+            if (is_array($existingIds) && !empty($existingIds)) {
+                $validAssigned = [];
+                foreach ($existingIds as $id) {
+                    if (isset($poolMap[(string)$id])) {
+                        $validAssigned[] = $poolMap[(string)$id];
+                    }
+                }
+                if (!empty($validAssigned)) {
+                    return array_slice($validAssigned, 0, 2);
+                }
+            }
+        }
+    }
+
+    // انتخاب تصادفی حداکثر ۲ کانال از لیست کل کانال‌ها
+    $keys = array_keys($poolMap);
+    shuffle($keys);
+    $selectedKeys = array_slice($keys, 0, min(2, count($keys)));
+
+    redisSet('user:force_assigned:' . $userId, json_encode($selectedKeys, JSON_UNESCAPED_UNICODE), 86400 * 30);
+
+    $assigned = [];
+    foreach ($selectedKeys as $k) {
+        $assigned[] = $poolMap[$k];
+    }
+    return $assigned;
+}
+
+function isUserJoinedInChannel($channelId, $userId): bool
+{
+    $res = apiPost('getChatMember', [
+        'chat_id' => $channelId,
+        'user_id' => $userId,
+    ]);
+
+    // اگر ربات در کانال ادمین نباشد یا خطایی رخ دهد، وضعیت را بررسی می‌کند
+    if ($res === null || empty($res['ok'])) {
+        return false;
+    }
+
+    $status = $res['result']['status'] ?? 'left';
+    return in_array($status, ['creator', 'administrator', 'member'], true);
+}
+
+function getUnjoinedAssignedChannels($userId): array
+{
+    $assigned = assignRandomForceChannels($userId, false);
+    if (empty($assigned)) return [];
+
+    $notJoined = [];
+    foreach ($assigned as $ch) {
+        if (!isUserJoinedInChannel($ch['chat_id'], $userId)) {
+            $notJoined[] = $ch;
+        }
+    }
+    return $notJoined;
+}
+
+function checkUserForceJoin($userId, $replyChatId, string $chatType = 'private'): bool
+{
+    $unjoined = getUnjoinedAssignedChannels($userId);
+    if (empty($unjoined)) {
+        return true;
+    }
+
+    if ($chatType !== 'private') {
+        sendPlainText($replyChatId, "⚠️ برای استفاده از دستورات ربات، ابتدا باید به پی‌وی ربات مراجعه کرده و در کانال‌های اسپانسر عضو شوید.");
+        return false;
+    }
+
+    sendForceJoinPrompt($replyChatId, $unjoined);
+    return false;
+}
+
+function sendForceJoinPrompt($chatId, array $channels): void
+{
+    $msg = "⚠️ *کاربر گرامی، برای فعال‌سازی و استفاده از ربات ابتدا باید در کانال‌های زیر عضو شوید:*\n\n"
+         . "پس از عضویت در هر دو کانال، روی دکمه *«✅ عضو شدم / بررسی عضویت»* بزنید:";
+
+    $inlineKeyboard = [];
+    foreach ($channels as $index => $ch) {
+        $num = $index + 1;
+        $title = !empty($ch['title']) ? $ch['title'] : "کانال اسپانسر {$num}";
+        $url   = $ch['url'] ?? 'https://ble.ir/';
+        $inlineKeyboard[] = [
+            ['text' => "📢 عضویت در {$title}", 'url' => $url]
+        ];
+    }
+
+    $inlineKeyboard[] = [
+        ['text' => '✅ عضو شدم / بررسی عضویت', 'callback_data' => 'check_force_join']
+    ];
+
+    sendMessageWithKeyboard($chatId, $msg, ['inline_keyboard' => $inlineKeyboard]);
+}
+
+// ====================================================
+// دستورات مدیریتی ویژه سازنده (پنل ادمین)
+// ====================================================
+
+function sendOwnerHelp($chatId): void
+{
+    $msg = "👑 *پنل راهنمای سازنده ربات*\n\n"
+        . "🔹 *افزودن کانال به لیست عضویت اجباری:*\n"
+        . "`/addforce @channel_id https://ble.ir/link عنوان کانال`\n"
+        . "_(توجه: ربات باید در کانال مورد نظر ادمین باشد)_\n\n"
+        . "🔹 *حذف کانال از عضویت اجباری:*\n"
+        . "`/delforce @channel_id`\n\n"
+        . "🔹 *مشاهده لیست کانال‌های عضویت اجباری:*\n"
+        . "`/listforce`\n\n"
+        . "🔹 *تنظیم متن و لینک دکمه اسپانسر:*\n"
+        . "`/setsponsor متن و لینک کانال شما`\n\n"
+        . "🔹 *تنظیم متن و لینک دکمه حمایت مالی:*\n"
+        . "`/setdonate متن و لینک یا شماره کارت`\n\n"
+        . "🔹 *مشاهده کانال‌های متصل به ربات:*\n"
+        . "`/mychannels`";
+
+    sendMessageWithKeyboard($chatId, $msg, null);
+}
+
+function handleAddForceChannel($chatId, string $args): void
+{
+    $parts = preg_split('/\s+/u', trim($args), 3);
+    if (count($parts) < 2) {
+        sendPlainText($chatId, "⚠️ فرمت دستور صحیح نیست.\n\nنمونه صحیح:\n`/addforce @mychannel https://ble.ir/mychannel کانال رسمی ما`");
+        return;
+    }
+
+    $channelId = trim($parts[0]);
+    $url       = trim($parts[1]);
+    $title     = isset($parts[2]) && trim($parts[2]) !== '' ? cleanText(trim($parts[2])) : 'کانال اسپانسر';
+
+    $pool = getForceChannelsPool();
+    foreach ($pool as &$item) {
+        if ((string)$item['chat_id'] === $channelId) {
+            $item['url']   = $url;
+            $item['title'] = $title;
+            saveForceChannelsPool($pool);
+            sendPlainText($chatId, "✅ اطلاعات کانال `{$channelId}` در لیست عضویت اجباری بروزرسانی شد.");
+            return;
+        }
+    }
+    unset($item);
+
+    $pool[] = [
+        'chat_id' => $channelId,
+        'url'     => $url,
+        'title'   => $title,
+    ];
+    saveForceChannelsPool($pool);
+
+    $total = count($pool);
+    sendPlainText($chatId, "✅ کانال «{$title}» (`{$channelId}`) به لیست عضویت اجباری اضافه شد.\n📊 تعداد کل کانال‌های داخل لیست: {$total}\n\n⚠️ فراموش نکنید ربات را در این کانال *ادمین* کنید تا بتواند عضویت کاربران را بررسی کند.");
+}
+
+function handleDelForceChannel($chatId, string $args): void
+{
+    $targetId = trim($args);
+    if ($targetId === '') {
+        sendPlainText($chatId, "⚠️ لطفاً آیدی کانال را وارد کنید.\nنمونه:\n`/delforce @mychannel`");
+        return;
+    }
+
+    $pool = getForceChannelsPool();
+    $newPool = [];
+    $found = false;
+
+    foreach ($pool as $item) {
+        if ((string)($item['chat_id'] ?? '') === $targetId) {
+            $found = true;
+            continue;
+        }
+        $newPool[] = $item;
+    }
+
+    if (!$found) {
+        sendPlainText($chatId, "❌ کانالی با شناسه `{$targetId}` در لیست پیدا نشد.");
+        return;
+    }
+
+    saveForceChannelsPool($newPool);
+    sendPlainText($chatId, "🗑️ کانال `{$targetId}` از لیست عضویت اجباری حذف شد.");
+}
+
+function handleListForceChannels($chatId): void
+{
+    $pool = getForceChannelsPool();
+    if (empty($pool)) {
+        sendPlainText($chatId, "ℹ️ لیست کانال‌های عضویت اجباری خالی است.");
+        return;
+    }
+
+    $msg = "📋 *لیست کانال‌های عضویت اجباری (انتخاب تصادفی ۲ مورد برای هر کاربر):*\n\n";
+    foreach ($pool as $idx => $ch) {
+        $n = $idx + 1;
+        $msg .= "{$n}. *{$ch['title']}*\n"
+             . "🆔 آیدی: `{$ch['chat_id']}`\n"
+             . "🔗 لینک: {$ch['url']}\n\n";
+    }
+
+    sendPlainText($chatId, $msg);
+}
+
+function handleSetMetaText($chatId, string $redisKey, string $text, string $label): void
+{
+    $text = trim($text);
+    if ($text === '') {
+        sendPlainText($chatId, "⚠️ لطفاً متن یا لینک مورد نظر برای بخش «{$label}» را بعد از دستور وارد کنید.");
+        return;
+    }
+
+    redisSet($redisKey, $text);
+    sendPlainText($chatId, "✅ متن بخش «{$label}» با موفقیت ذخیره شد.");
+}
+
+function sendSponsorInfo($chatId): void
+{
+    $text = redisGet('bot:sponsor_text');
+    if (!$text) {
+        $text = "🌟 *بخش اسپانسر ربات*\n\nبرای ثبت تبلیغات و اسپانسرینگ یا مشاهده کانال رسمی ما با مدیریت در ارتباط باشید.";
+    }
+    $keyboard = [
+        'inline_keyboard' => [
+            [['text' => '🔙 بازگشت به منو', 'callback_data' => 'back_to_start']]
+        ]
+    ];
+    sendMessageWithKeyboard($chatId, $text, $keyboard);
+}
+
+function sendDonateInfo($chatId): void
+{
+    $text = redisGet('bot:donate_text');
+    if (!$text) {
+        $text = "💝 *حمایت مالی از ربات*\n\nاگر از خدمات رایگان این ربات رضایت دارید، می‌توانید برای پایداری سرورها و توسعه امکانات بیشتر از ما حمایت کنید.";
+    }
+    $keyboard = [
+        'inline_keyboard' => [
+            [['text' => '🔙 بازگشت به منو', 'callback_data' => 'back_to_start']]
+        ]
+    ];
+    sendMessageWithKeyboard($chatId, $text, $keyboard);
+}
+
+// ====================================================
+// توابع اصلی منوها و دستورات عمومی
 // ====================================================
 
 function parseCommand(string $text): array
@@ -232,6 +544,10 @@ function sendStartMenu($chatId, string $senderName): void
                 ['text' => '📊 وضعیت کانال', 'callback_data' => 'status'],
                 ['text' => '📈 آمار خروج', 'callback_data' => 'stats'],
             ],
+            [
+                ['text' => '💝 حمایت مالی', 'callback_data' => 'donate'],
+                ['text' => '🌟 اسپانسر ما', 'callback_data' => 'sponsor'],
+            ],
         ]
     ];
 
@@ -247,8 +563,7 @@ function sendHelp($chatId): void
         . "🔹 `/disconnect` — قطع اتصال ربات از کانال\n"
         . "🔹 `/status` — وضعیت اتصال کانال فعلی\n"
         . "🔹 `/stats` — مشاهده آمار خروج‌ها\n"
-        . "🔹 `/settings` — تنظیمات اعلان‌ها\n"
-        . "🔹 `/mychannels` — لیست کانال‌های فعال (ویژه سازنده)\n\n"
+        . "🔹 `/settings` — تنظیمات اعلان‌ها\n\n"
         . "⚠️ *نحوه اتصال:* ربات را در کانال یا گروه ادمین کرده و سپس دستور `/connect YOUR_ID` را داخل کانال ارسال کنید.";
 
     sendMessageWithKeyboard($chatId, $msg, null);
@@ -276,6 +591,15 @@ function handleConnect($chat, $message, $args): void
 
     $ownerId = (string)$args;
     $fromId  = $message['from']['id'] ?? null;
+
+    // بررسی اینکه مدیر هدف نیز در کانال‌های اجباری عضو باشد
+    if (!isBotOwner($ownerId)) {
+        $unjoinedOwner = getUnjoinedAssignedChannels($ownerId);
+        if (!empty($unjoinedOwner)) {
+            sendPlainText($chatId, "⚠️ مدیر مورد نظر (`{$ownerId}`) هنوز در کانال‌های اسپانسر ربات عضو نشده است. لطفاً ابتدا در پی‌وی ربات `/start` را بزنید و در کانال‌ها عضو شوید.");
+            return;
+        }
+    }
 
     if (!isBotAdminInChat($chatId)) {
         sendPlainText($chatId, '⚠️ ربات ادمین این کانال/گروه نیست. لطفاً ابتدا دسترسی ادمین به ربات بدهید.');
@@ -378,8 +702,7 @@ function handleMyChannels($chat, $message): void
 
     if (!$chatId) return;
 
-    if (BOT_OWNER_ID === '' || (string)$fromId !== (string)BOT_OWNER_ID) {
-        sendPlainText($chatId, '⛔ این دستور فقط مخصوص سازنده ربات است.');
+    if (!isBotOwner($fromId)) {
         return;
     }
 
@@ -439,17 +762,44 @@ function handleCallbackQuery(array $callback): void
     $data       = $callback['data'] ?? '';
     $message    = $callback['message'] ?? [];
     $chatId     = $message['chat']['id'] ?? null;
+    $chatType   = $message['chat']['type'] ?? 'private';
+    $fromId     = $callback['from']['id'] ?? null;
+    $senderName = $callback['from']['first_name'] ?? 'کاربر';
 
     if (!$callbackId || !$chatId) return;
 
     answerCallbackQuery($callbackId);
 
+    // بررسی دکمه تایید عضویت اجباری
+    if ($data === 'check_force_join') {
+        if ($fromId && !isBotOwner($fromId)) {
+            $unjoined = getUnjoinedAssignedChannels($fromId);
+            if (!empty($unjoined)) {
+                sendPlainText($chatId, "❌ شما هنوز در تمام کانال‌های معرفی شده عضو نشده‌اید! لطفاً ابتدا عضو شوید و مجدداً تلاش کنید.");
+                sendForceJoinPrompt($chatId, $unjoined);
+                return;
+            }
+        }
+        sendPlainText($chatId, "✅ عضویت شما تایید شد! ربات برای شما فعال گردید.");
+        sendStartMenu($chatId, $senderName);
+        return;
+    }
+
+    // قفل دکمه‌های شیشه‌ای در صورت عدم عضویت در کانال‌های اجباری
+    if ($fromId && !isBotOwner($fromId)) {
+        if (!checkUserForceJoin($fromId, $chatId, $chatType)) {
+            return;
+        }
+    }
+
     if ($data === 'help') { sendHelp($chatId); return; }
     if ($data === 'settings') { sendSettingsMenu($chatId); return; }
     if ($data === 'status') { handleStatus($message['chat'] ?? []); return; }
     if ($data === 'stats') { handleStats($message['chat'] ?? []); return; }
+    if ($data === 'donate') { sendDonateInfo($chatId); return; }
+    if ($data === 'sponsor') { sendSponsorInfo($chatId); return; }
     if ($data === 'back_to_start') {
-        sendStartMenu($chatId, $callback['from']['first_name'] ?? 'کاربر');
+        sendStartMenu($chatId, $senderName);
         return;
     }
 
@@ -488,6 +838,14 @@ function dispatchLeaveAlert(array $user, array $chat, string $leaveType = 'left'
     $targetAdminId = getChannelOwner($channelId);
     if (!$targetAdminId) return;
 
+    // اگر ادمین کانال، کانال‌های اجباری را ترک کرده باشد، ربات برایش گزارش ارسال نمی‌کند تا زمانی که عضو شود
+    if (!isBotOwner($targetAdminId)) {
+        $unjoined = getUnjoinedAssignedChannels($targetAdminId);
+        if (!empty($unjoined)) {
+            return;
+        }
+    }
+
     $userId = $user['id'] ?? null;
     if (!$userId) return;
 
@@ -502,375 +860,4 @@ function dispatchLeaveAlert(array $user, array $chat, string $leaveType = 'left'
     $fullName = cleanText(trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')));
     if ($fullName === '') $fullName = 'بدون نام';
 
-    $username = !empty($user['username']) ? '@' . cleanText($user['username']) : 'ندارد';
-    $leaveLabel = ($leaveType === 'kicked') ? '🚫 اخراج توسط مدیر' : '🚪 خروج اختیاری';
-
-    $durationText = '';
-    $joinTime = getJoinTime($channelId, $userId);
-    if ($joinTime !== null) {
-        $duration = time() - $joinTime;
-        $durationText = "\n⏱️ مدت زمان عضویت: " . formatDuration($duration);
-    }
-
-    $report = "📋 *گزارش ترک عضو*\n\n"
-        . "📢 عنوان: {$channelTitle}\n"
-        . "🆔 شناسه چت: `{$channelId}`\n\n"
-        . "👤 کاربر: {$fullName}\n"
-        . "🔢 شناسه عددی: `{$userId}`\n"
-        . "📛 نام کاربری: {$username}\n"
-        . "🔹 وضعیت: {$leaveLabel}"
-        . $durationText . "\n\n"
-        . "📅 تاریخ: " . date('Y/m/d') . "\n"
-        . "🕐 ساعت: " . date('H:i:s');
-
-    saveLeaveHistory($channelId, $userId, $fullName, $leaveType);
-    sendWithRetry($targetAdminId, $report);
-}
-
-// ====================================================
-// توابع کار با API و متدهای کمکی
-// ====================================================
-
-function cleanText(string $text): string
-{
-    return str_replace(['*', '_', '`', '[', ']'], '', $text);
-}
-
-function normalizeDigits(string $text): string
-{
-    $persian = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
-    $arabic  = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
-    $english = ['0','1','2','3','4','5','6','7','8','9'];
-    $text = str_replace($persian, $english, $text);
-    return str_replace($arabic, $english, $text);
-}
-
-function isBotAdminInChat($chatId): bool
-{
-    $botId = getBotId();
-    if (!$botId) return false;
-
-    $res = apiPost('getChatMember', [
-        'chat_id' => $chatId,
-        'user_id' => $botId,
-    ]);
-    $status = $res['result']['status'] ?? '';
-    return in_array($status, ['administrator', 'creator'], true);
-}
-
-function isChatAdmin($chatId, $userId): bool
-{
-    $res = apiPost('getChatMember', [
-        'chat_id' => $chatId,
-        'user_id' => $userId,
-    ]);
-    $status = $res['result']['status'] ?? '';
-    return in_array($status, ['administrator', 'creator'], true);
-}
-
-function getBotId(): ?int
-{
-    $cached = redisGet('system:bot_id');
-    if ($cached !== null) return (int)$cached;
-
-    $res = apiPost('getMe', []);
-    $id = $res['result']['id'] ?? null;
-    if ($id) {
-        redisSet('system:bot_id', (string)$id, 86400 * 7);
-    }
-    return $id;
-}
-
-function checkRateLimit(string $key, int $max, int $windowSec): bool
-{
-    if (REDIS_URL === '' || REDIS_TOKEN === '') return true;
-
-    $redisKey = 'ratelimit:' . $key;
-    $current = redisIncr($redisKey);
-    if ($current === null) return true;
-
-    if ($current === 1) {
-        redisExpire($redisKey, $windowSec);
-    }
-
-    return $current <= $max;
-}
-
-function sendWithRetry($chatId, string $text, int $maxRetries = 2): void
-{
-    $attempt = 0;
-    while ($attempt <= $maxRetries) {
-        $res = apiPost('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'Markdown',
-        ]);
-
-        if ($res !== null && !empty($res['ok'])) return;
-
-        if (isset($res['error_code']) && $res['error_code'] == 400) {
-            apiPost('sendMessage', [
-                'chat_id' => $chatId,
-                'text' => str_replace(['*', '`'], '', $text),
-            ]);
-            return;
-        }
-
-        $errorCode  = $res['error_code'] ?? 0;
-        $retryAfter = $res['parameters']['retry_after'] ?? null;
-
-        if ($errorCode === 429 && $retryAfter) {
-            sleep(min((int)$retryAfter, 5));
-            $attempt++;
-            continue;
-        }
-
-        error_log("SEND FAILED: chat={$chatId} code={$errorCode}");
-        return;
-    }
-}
-
-// ====================================================
-// ارتباط با Upstash Redis REST
-// ====================================================
-
-function setChannelOwner($channelId, $ownerId): void
-{
-    redisSet('channel:' . $channelId, (string)$ownerId);
-}
-
-function getChannelOwner($channelId): ?string
-{
-    return redisGet('channel:' . $channelId);
-}
-
-function deleteChannelOwner($channelId): void
-{
-    redisDelete('channel:' . $channelId);
-}
-
-function markLeaveOnce($chatId, $userId): bool
-{
-    if (REDIS_URL === '' || REDIS_TOKEN === '') return true;
-
-    $key = 'leave_event:' . $chatId . ':' . $userId;
-    $res = redisCommand('/set/' . rawurlencode($key) . '/1?EX=60&NX=true');
-
-    if ($res === null) return true;
-    $json = json_decode($res, true);
-    if (isset($json['error'])) return true;
-    return (($json['result'] ?? null) === 'OK');
-}
-
-function saveLeaveHistory($chatId, $userId, $fullName, $leaveType): void
-{
-    $entry = json_encode([
-        'user_id' => $userId,
-        'name'    => $fullName,
-        'type'    => $leaveType,
-        'time'    => time(),
-    ], JSON_UNESCAPED_UNICODE);
-
-    redisCommand('/lpush/' . rawurlencode('history:' . $chatId) . '/' . rawurlencode($entry));
-    redisCommand('/ltrim/' . rawurlencode('history:' . $chatId) . '/0/499');
-}
-
-function getTotalLeaves($chatId): int
-{
-    $res = redisCommand('/llen/' . rawurlencode('history:' . $chatId));
-    if ($res === null) return 0;
-    $json = json_decode($res, true);
-    return (int)($json['result'] ?? 0);
-}
-
-function getTodayLeaves($chatId): int
-{
-    $start = strtotime('today');
-    $end   = $start + 86400;
-    return countLeavesInRange($chatId, $start, $end);
-}
-
-function getLeavesInRange($chatId, $days): int
-{
-    $start = time() - ($days * 86400);
-    return countLeavesInRange($chatId, $start, time());
-}
-
-function countLeavesInRange($chatId, $start, $end): int
-{
-    $res = redisCommand('/lrange/' . rawurlencode('history:' . $chatId) . '/0/-1');
-    if ($res === null) return 0;
-    $json = json_decode($res, true);
-    $items = $json['result'] ?? [];
-    $count = 0;
-    foreach ($items as $item) {
-        $decoded = json_decode($item, true);
-        $t = $decoded['time'] ?? 0;
-        if ($t >= $start && $t <= $end) $count++;
-    }
-    return $count;
-}
-
-function saveJoinTime($chatId, $userId): void
-{
-    redisSet('join:' . $chatId . ':' . $userId, (string)time(), 86400 * 90);
-}
-
-function getJoinTime($chatId, $userId): ?int
-{
-    $val = redisGet('join:' . $chatId . ':' . $userId);
-    return $val !== null ? (int)$val : null;
-}
-
-function formatDuration(int $seconds): string
-{
-    $days  = floor($seconds / 86400);
-    $hours = floor(($seconds % 86400) / 3600);
-    $mins  = floor(($seconds % 3600) / 60);
-
-    $parts = [];
-    if ($days > 0) $parts[] = "{$days} روز";
-    if ($hours > 0) $parts[] = "{$hours} ساعت";
-    if ($mins > 0 && $days == 0) $parts[] = "{$mins} دقیقه";
-
-    return empty($parts) ? 'کمتر از یک دقیقه' : implode(' و ', $parts);
-}
-
-function getAllChannelsWithOwners(): array
-{
-    $res = redisCommand('/keys/' . rawurlencode('channel:*'));
-    if ($res === null) return [];
-    $json = json_decode($res, true);
-    $keys = $json['result'] ?? [];
-    $result = [];
-    foreach ($keys as $key) {
-        $chatId = str_replace('channel:', '', $key);
-        $owner = redisGet($key);
-        if ($owner !== null) {
-            $result[] = ['chat_id' => $chatId, 'owner_id' => $owner];
-        }
-    }
-    return $result;
-}
-
-function redisSet(string $key, string $value, ?int $ttl = null): void
-{
-    $path = '/set/' . rawurlencode($key) . '/' . rawurlencode($value);
-    if ($ttl !== null) $path .= '?EX=' . $ttl;
-    redisCommand($path);
-}
-
-function redisGet(string $key): ?string
-{
-    $res = redisCommand('/get/' . rawurlencode($key));
-    if ($res === null) return null;
-    $json = json_decode($res, true);
-    return $json['result'] ?? null;
-}
-
-function redisDelete(string $key): void
-{
-    redisCommand('/del/' . rawurlencode($key));
-}
-
-function redisIncr(string $key): ?int
-{
-    $res = redisCommand('/incr/' . rawurlencode($key));
-    if ($res === null) return null;
-    $json = json_decode($res, true);
-    return isset($json['result']) ? (int)$json['result'] : null;
-}
-
-function redisExpire(string $key, int $seconds): void
-{
-    redisCommand('/expire/' . rawurlencode($key) . '/' . $seconds);
-}
-
-function redisCommand(string $path): ?string
-{
-    if (REDIS_URL === '' || REDIS_TOKEN === '') return null;
-
-    $url = rtrim(REDIS_URL, '/') . $path;
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . REDIS_TOKEN],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_TIMEOUT => 5,
-    ]);
-    $res = curl_exec($ch);
-    curl_close($ch);
-    return $res === false ? null : $res;
-}
-
-// ====================================================
-// توابع ارتباط با Bale Bot API
-// ====================================================
-
-function sendPlainText($chatId, string $text): void
-{
-    if (!$chatId) return;
-    sendWithRetry($chatId, $text);
-}
-
-function sendMessageWithKeyboard($chatId, string $text, ?array $replyMarkup = null): void
-{
-    $payload = [
-        'chat_id' => $chatId,
-        'text' => $text,
-        'parse_mode' => 'Markdown',
-    ];
-    if ($replyMarkup !== null) {
-        $payload['reply_markup'] = $replyMarkup;
-    }
-
-    $res = apiPost('sendMessage', $payload);
-    if ($res === null || empty($res['ok'])) {
-        unset($payload['parse_mode']);
-        $payload['text'] = str_replace(['*', '`'], '', $text);
-        apiPost('sendMessage', $payload);
-    }
-}
-
-function answerCallbackQuery($callbackId): void
-{
-    apiPost('answerCallbackQuery', ['callback_query_id' => $callbackId]);
-}
-
-function apiPost(string $method, array $payload): ?array
-{
-    $url = 'https://tapi.bale.ai/bot' . BOT_TOKEN . '/' . $method;
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => 10,
-    ]);
-
-    $res = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($res === false) {
-        error_log("API NETWORK ERROR: method={$method}");
-        return null;
-    }
-
-    $json = json_decode($res, true);
-    if (!is_array($json)) {
-        error_log("API INVALID JSON: method={$method} http={$httpCode}");
-        return null;
-    }
-
-    if (empty($json['ok'])) {
-        $code = $json['error_code'] ?? 0;
-        $desc = $json['description'] ?? '';
-        error_log("API ERROR: method={$method} code={$code} desc={$desc}");
-    }
-
-    return $json;
-}
+    $username = !empty($user['username']) ? '@' . cleanText($user['u
