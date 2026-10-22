@@ -14,8 +14,22 @@ function redisCommand(string $path): ?string {
         CURLOPT_TIMEOUT => 5,
     ]);
     $res = curl_exec($ch);
-    curl_close($ch);
-    return $res === false ? null : $res;
+    if ($res === false) {
+        error_log('[Redis] curl failed: ' . curl_error($ch));
+        return null;
+    }
+    return $res;
+}
+
+function redisParseResult(?string $res): mixed {
+    if ($res === null) {
+        return null;
+    }
+    $json = json_decode($res, true);
+    if (!is_array($json) || !array_key_exists('result', $json)) {
+        return null;
+    }
+    return $json['result'];
 }
 
 function redisSet(string $key, string $value, ?int $ttl = null): void {
@@ -27,30 +41,60 @@ function redisSet(string $key, string $value, ?int $ttl = null): void {
 }
 
 function redisGet(string $key): ?string {
-    $res = redisCommand('/get/' . rawurlencode($key));
-    if ($res === null) {
-        return null;
-    }
-    $json = json_decode($res, true);
-    if (!is_array($json) || !array_key_exists('result', $json) || $json['result'] === null) {
-        return null;
-    }
-    return (string)$json['result'];
+    $result = redisParseResult(redisCommand('/get/' . rawurlencode($key)));
+    return $result === null ? null : (string)$result;
 }
 
 function redisDel(string $key): void {
     redisCommand('/del/' . rawurlencode($key));
 }
 
-// ---------------- مدیریت مالکیت کانال‌ها ----------------
+function redisHSet(string $key, string $field, string $value): void {
+    redisCommand('/hset/' . rawurlencode($key) . '/' . rawurlencode($field) . '/' . rawurlencode($value));
+}
 
-function getAllChannelsMap(): array {
-    $raw = redisGet('all_channels_map');
-    if (!$raw) {
+function redisHGetAll(string $key): array {
+    $result = redisParseResult(redisCommand('/hgetall/' . rawurlencode($key)));
+    if (!is_array($result)) {
         return [];
     }
-    $data = json_decode($raw, true);
-    return is_array($data) ? $data : [];
+    $isFlat = !empty($result) && array_keys($result) === range(0, count($result) - 1);
+    if (!$isFlat) {
+        return $result;
+    }
+    $pairs = [];
+    $count = count($result);
+    for ($i = 0; $i + 1 < $count; $i += 2) {
+        $pairs[(string)$result[$i]] = (string)$result[$i + 1];
+    }
+    return $pairs;
+}
+
+function redisHDel(string $key, string $field): void {
+    redisCommand('/hdel/' . rawurlencode($key) . '/' . rawurlencode($field));
+}
+
+function redisLPushTrim(string $key, string $value, int $max = 50): void {
+    redisCommand('/lpush/' . rawurlencode($key) . '/' . rawurlencode($value));
+    redisCommand('/ltrim/' . rawurlencode($key) . '/0/' . ($max - 1));
+}
+
+function redisLRange(string $key, int $start = 0, int $stop = 49): array {
+    $result = redisParseResult(redisCommand('/lrange/' . rawurlencode($key) . '/' . $start . '/' . $stop));
+    return is_array($result) ? $result : [];
+}
+
+function redisSAdd(string $key, string $member): void {
+    redisCommand('/sadd/' . rawurlencode($key) . '/' . rawurlencode($member));
+}
+
+function redisSRem(string $key, string $member): void {
+    redisCommand('/srem/' . rawurlencode($key) . '/' . rawurlencode($member));
+}
+
+function redisSMembers(string $key): array {
+    $result = redisParseResult(redisCommand('/smembers/' . rawurlencode($key)));
+    return is_array($result) ? $result : [];
 }
 
 function setChannelOwner($channelId, $ownerId, string $title = '', string $username = ''): void {
@@ -59,18 +103,30 @@ function setChannelOwner($channelId, $ownerId, string $title = '', string $usern
 
     redisSet("channel_owner:{$channelIdStr}", $ownerIdStr);
 
-    $map = getAllChannelsMap();
-    $map[$channelIdStr] = [
+    $info = json_encode([
         'owner_id' => $ownerIdStr,
         'title' => $title,
         'username' => $username,
         'updated_at' => date('Y-m-d H:i:s'),
-    ];
-    redisSet('all_channels_map', json_encode($map, JSON_UNESCAPED_UNICODE));
+    ], JSON_UNESCAPED_UNICODE);
+
+    redisHSet('all_channels_map', $channelIdStr, $info);
 }
 
 function getChannelOwner($channelId): ?string {
     return redisGet("channel_owner:" . (string)$channelId);
+}
+
+function getAllChannelsMap(): array {
+    $raw = redisHGetAll('all_channels_map');
+    $result = [];
+    foreach ($raw as $chId => $infoJson) {
+        $decoded = json_decode((string)$infoJson, true);
+        if (is_array($decoded)) {
+            $result[(string)$chId] = $decoded;
+        }
+    }
+    return $result;
 }
 
 function removeChannel($channelId): bool {
@@ -81,12 +137,7 @@ function removeChannel($channelId): bool {
     }
     redisDel("channel_owner:{$channelIdStr}");
     redisDel("leave_history:{$channelIdStr}");
-
-    $map = getAllChannelsMap();
-    if (isset($map[$channelIdStr])) {
-        unset($map[$channelIdStr]);
-        redisSet('all_channels_map', json_encode($map, JSON_UNESCAPED_UNICODE));
-    }
+    redisHDel('all_channels_map', $channelIdStr);
     return true;
 }
 
@@ -102,39 +153,28 @@ function getOwnerChannels($ownerId): array {
     return $result;
 }
 
-// ---------------- مدیریت تاریخچه خروج ----------------
-
 function saveLeaveHistory($channelId, array $record): void {
-    $key = "leave_history:" . (string)$channelId;
-    $raw = redisGet($key);
-    $list = $raw ? json_decode($raw, true) : [];
-    if (!is_array($list)) {
-        $list = [];
-    }
-    array_unshift($list, $record);
-    $list = array_slice($list, 0, 50); // نگهداری ۵۰ خروج آخر هر کانال
-    redisSet($key, json_encode($list, JSON_UNESCAPED_UNICODE));
+    redisLPushTrim(
+        'leave_history:' . (string)$channelId,
+        json_encode($record, JSON_UNESCAPED_UNICODE),
+        50
+    );
 }
 
 function getLeaveHistory($channelId): array {
-    $key = "leave_history:" . (string)$channelId;
-    $raw = redisGet($key);
-    if (!$raw) {
-        return [];
+    $raw = redisLRange('leave_history:' . (string)$channelId, 0, 49);
+    $result = [];
+    foreach ($raw as $item) {
+        $decoded = json_decode((string)$item, true);
+        if (is_array($decoded)) {
+            $result[] = $decoded;
+        }
     }
-    $list = json_decode($raw, true);
-    return is_array($list) ? $list : [];
+    return $result;
 }
 
-// ---------------- سیستم اد اجباری تصادفی ----------------
-
 function getForceChannelsPool(): array {
-    $raw = redisGet('force_channels_pool');
-    if (!$raw) {
-        return [];
-    }
-    $pool = json_decode($raw, true);
-    return is_array($pool) ? $pool : [];
+    return redisSMembers('force_channels_pool');
 }
 
 function addForceChannelToPool(string $channelRef): void {
@@ -145,11 +185,7 @@ function addForceChannelToPool(string $channelRef): void {
     if ($channelRef[0] !== '@' && !preg_match('/^-?\d+$/', $channelRef)) {
         $channelRef = '@' . $channelRef;
     }
-    $pool = getForceChannelsPool();
-    if (!in_array($channelRef, $pool, true)) {
-        $pool[] = $channelRef;
-        redisSet('force_channels_pool', json_encode(array_values($pool), JSON_UNESCAPED_UNICODE));
-    }
+    redisSAdd('force_channels_pool', $channelRef);
 }
 
 function removeForceChannelFromPool(string $channelRef): bool {
@@ -158,12 +194,10 @@ function removeForceChannelFromPool(string $channelRef): bool {
         $channelRef = '@' . $channelRef;
     }
     $pool = getForceChannelsPool();
-    $index = array_search($channelRef, $pool, true);
-    if ($index === false) {
+    if (!in_array($channelRef, $pool, true)) {
         return false;
     }
-    unset($pool[$index]);
-    redisSet('force_channels_pool', json_encode(array_values($pool), JSON_UNESCAPED_UNICODE));
+    redisSRem('force_channels_pool', $channelRef);
     return true;
 }
 
@@ -190,8 +224,9 @@ function assignRandomForceChannels($userId, bool $reset = false): array {
         }
     }
 
+    $pool = array_values($pool);
     if (count($pool) <= 2) {
-        $selected = array_values($pool);
+        $selected = $pool;
     } else {
         $keys = array_rand($pool, 2);
         $selected = [$pool[$keys[0]], $pool[$keys[1]]];
@@ -200,8 +235,6 @@ function assignRandomForceChannels($userId, bool $reset = false): array {
     redisSet($key, json_encode($selected, JSON_UNESCAPED_UNICODE), 86400 * 7);
     return $selected;
 }
-
-// ---------------- متن‌های پویا (اسپانسر و حمایت مالی) ----------------
 
 function setSponsorText(string $text): void {
     redisSet('bot_sponsor_text', $text);

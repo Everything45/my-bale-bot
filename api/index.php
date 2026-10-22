@@ -8,18 +8,24 @@ require_once __DIR__ . '/../src/bot_logic.php';
 
 $input = file_get_contents('php://input');
 
-// پاسخ به درخواست‌های مرورگر (GET) و تنظیم وب‌هوک
 if ($input === '' || ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
     if (isset($_GET['setwebhook'])) {
         $host = $_SERVER['HTTP_HOST'] ?? '';
         $webhookUrl = 'https://' . $host . '/api/index.php';
-        $res = apiPost('setWebhook', ['url' => $webhookUrl]);
+
+        $payload = ['url' => $webhookUrl];
+        if (WEBHOOK_SECRET !== '') {
+            $payload['secret_token'] = WEBHOOK_SECRET;
+        }
+
+        $res = apiPost('setWebhook', $payload);
         if (!headers_sent()) {
             header('Content-Type: application/json; charset=utf-8');
         }
         echo json_encode([
             'status' => 'Webhook Setup Executed',
             'webhook_url' => $webhookUrl,
+            'secret_enabled' => WEBHOOK_SECRET !== '',
             'bale_response' => $res,
         ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
         exit;
@@ -29,24 +35,31 @@ if ($input === '' || ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
     exit;
 }
 
+if (WEBHOOK_SECRET !== '') {
+    $received = $_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '';
+    if (!hash_equals(WEBHOOK_SECRET, $received)) {
+        if (!headers_sent()) {
+            http_response_code(403);
+        }
+        exit('Forbidden');
+    }
+}
+
 $update = json_decode($input, true);
 if (!is_array($update)) {
     finishRequest();
 }
 
-// ۱. پردازش دکمه‌های شیشه‌ای
 if (isset($update['callback_query']) && is_array($update['callback_query'])) {
     handleCallbackQuery($update['callback_query']);
     finishRequest();
 }
 
-// ۲. پردازش رویدادهای chat_member (خروج یا اخراج عضو در کانال)
 if (isset($update['chat_member']) && is_array($update['chat_member'])) {
     handleChatMemberUpdate($update['chat_member']);
     finishRequest();
 }
 
-// ۳. پردازش پیام‌های دریافتی یا سرویس‌مسیج خروج (left_chat_member)
 $message = $update['message'] ?? ($update['channel_post'] ?? null);
 if (is_array($message)) {
     if (isset($message['left_chat_member']) && is_array($message['left_chat_member'])) {

@@ -7,6 +7,7 @@ define('BOT_TOKEN', trim(getenv('BOT_TOKEN') ?: ''));
 define('REDIS_URL', trim(getenv('UPSTASH_REDIS_REST_URL') ?: ''));
 define('REDIS_TOKEN', trim(getenv('UPSTASH_REDIS_REST_TOKEN') ?: ''));
 define('BOT_OWNER_ID', trim(getenv('BOT_OWNER_ID') ?: ''));
+define('WEBHOOK_SECRET', trim(getenv('WEBHOOK_SECRET') ?: ''));
 
 if (BOT_TOKEN === '') {
     if (!headers_sent()) {

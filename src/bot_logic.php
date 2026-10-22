@@ -16,6 +16,24 @@ function isBotOwner($userId): bool {
     return (string)$userId === (string)BOT_OWNER_ID;
 }
 
+function getBotId(): ?string {
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    $stored = redisGet('bot_self_id');
+    if ($stored !== null && $stored !== '') {
+        return $cached = $stored;
+    }
+    $res = apiPost('getMe', []);
+    if ($res === null || empty($res['ok']) || empty($res['result']['id'])) {
+        return null;
+    }
+    $id = (string)$res['result']['id'];
+    redisSet('bot_self_id', $id, 86400);
+    return $cached = $id;
+}
+
 function parseCommand(string $text): array {
     $text = trim($text);
     if (!preg_match('/^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$/us', $text, $m)) {
@@ -24,15 +42,12 @@ function parseCommand(string $text): array {
     return [strtolower($m[1]), isset($m[2]) ? trim($m[2]) : ''];
 }
 
-// ---------------- بررسی عضویت اجباری (اد اجباری) ----------------
-
 function checkSingleChannelMembership(string $channelRef, $userId): bool {
     $res = apiPost('getChatMember', [
         'chat_id' => $channelRef,
         'user_id' => $userId,
     ]);
     if ($res === null || empty($res['ok'])) {
-        // اگر ربات در کانال مقصد ادمین نباشد یا کانال یافت نشود، کاربر را مسدود نمی‌کنیم
         return true;
     }
     $status = $res['result']['status'] ?? 'left';
@@ -81,8 +96,6 @@ function sendForceJoinPrompt($chatId, array $missingChannels): void {
     sendMessageWithKeyboard($chatId, $msg, ['inline_keyboard' => $inlineKeyboard]);
 }
 
-// ---------------- منوها و راهنماها ----------------
-
 function sendStartMenu($chatId): void {
     $text = "👋 *به ربات ردیاب خروج اعضای کانال خوش آمدید!*\n\n"
           . "با استفاده از این ربات می‌توانید به صورت لحظه‌ای متوجه شوید چه کسانی از کانال شما خارج می‌شوند.\n\n"
@@ -114,15 +127,15 @@ function getHelpText(): string {
          . "2️⃣ دستور زیر را لمس کنید تا کپی شود، سپس به جای `@username` آیدی کانال خود را قرار داده و ارسال کنید:\n"
          . "`/connect @username`\n\n"
          . "━━━━━━━━━━━━━━━━━━\n"
-         . "🛠 *دستورات مستقیم (روی دستور کلیک کنید تا ارسال شود):*\n\n"
+         . "🛠 *دستورات مستقیم:*\n\n"
          . "🔹 مشاهده لیست کانال‌های ثبت‌شده شما:\n"
          . "/my\n\n"
-         . "🔹 بررسی وضعیت آنلاین بودن ربات و دیتابیس:\n"
+         . "🔹 بررسی وضعیت آنلاین بودن ربات:\n"
          . "/status\n\n"
          . "🔹 بازگشت به منوی اصلی:\n"
          . "/start\n\n"
          . "━━━━━━━━━━━━━━━━━━\n"
-         . "⚙️ *دستورات کانال (روی دستور بزنید تا کپی شود):*\n\n"
+         . "⚙️ *دستورات کانال:*\n\n"
          . "🔸 مشاهده تاریخچه آخرین خروجی‌های کانال:\n"
          . "`/history @username`\n\n"
          . "🔸 قطع اتصال و حذف کانال از ربات:\n"
@@ -132,13 +145,13 @@ function getHelpText(): string {
 function getAdminHelpText(): string {
     return "👑 *پنل مدیریت کل ربات (مخصوص مالک)*\n"
          . "━━━━━━━━━━━━━━━━━━\n\n"
-         . "📊 *دستورات клиکی (برای اجرای مستقیم روی دستور بزنید):*\n\n"
-         . "🔹 آمار کلی ربات و لیست تمام کانال‌ها:\n"
-         . "/stats\n\n"
+         . "📊 *دستورات کلیکی:*\n\n"
+         . "🔹 لیست تمام کانال‌های ثبت‌شده در ربات:\n"
+         . "/mychannels\n\n"
          . "🔹 مشاهده لیست کانال‌های عضویت اجباری:\n"
          . "/forcelist\n\n"
          . "━━━━━━━━━━━━━━━━━━\n"
-         . "⚙️ *دستورات تنظیمی (روی دستور بزنید تا کپی شود):*\n\n"
+         . "⚙️ *دستورات تنظیمی:*\n\n"
          . "🔸 افزودن کانال به لیست عضویت اجباری:\n"
          . "`/addforce @channel`\n\n"
          . "🔸 حذف کانال از لیست عضویت اجباری:\n"
@@ -149,7 +162,23 @@ function getAdminHelpText(): string {
          . "`/setdonate متن جدید`";
 }
 
-// ---------------- هندلرهای دستورات ----------------
+function resolveChannelId(string $target): ?string {
+    $target = trim($target);
+    if ($target === '') {
+        return null;
+    }
+    if (preg_match('/^-?\d+$/', $target)) {
+        return $target;
+    }
+    if ($target[0] !== '@') {
+        $target = '@' . $target;
+    }
+    $chatRes = apiPost('getChat', ['chat_id' => $target]);
+    if ($chatRes === null || empty($chatRes['ok'])) {
+        return null;
+    }
+    return (string)$chatRes['result']['id'];
+}
 
 function handleConnect($chatId, $userId, string $arg): void {
     if ($arg === '') {
@@ -169,9 +198,28 @@ function handleConnect($chatId, $userId, string $arg): void {
     }
 
     $chatObj = $chatRes['result'];
-    $realChannelId = $chatObj['id'];
+    $realChannelId = (string)$chatObj['id'];
     $title = $chatObj['title'] ?? 'بدون نام';
     $username = isset($chatObj['username']) ? '@' . $chatObj['username'] : '';
+
+    $existingOwner = getChannelOwner($realChannelId);
+    if ($existingOwner !== null && (string)$existingOwner !== (string)$userId && !isBotOwner($userId)) {
+        sendPlainText($chatId, "⛔ این کانال قبلاً توسط کاربر دیگری ثبت شده است.");
+        return;
+    }
+
+    $botId = getBotId();
+    if ($botId !== null) {
+        $botMember = apiPost('getChatMember', [
+            'chat_id' => $realChannelId,
+            'user_id' => $botId,
+        ]);
+        $botStatus = $botMember['result']['status'] ?? '';
+        if (!in_array($botStatus, ['administrator', 'creator'], true)) {
+            sendPlainText($chatId, "⚠️ ابتدا ربات را در کانال ادمین کنید تا گزارش‌ها ارسال شوند، سپس دوباره تلاش کنید.");
+            return;
+        }
+    }
 
     $memberRes = apiPost('getChatMember', [
         'chat_id' => $realChannelId,
@@ -215,17 +263,10 @@ function handleRemoveChannel($chatId, $userId, string $arg): void {
         return;
     }
 
-    $target = trim($arg);
-    $realId = $target;
-
-    if (!preg_match('/^-?\d+$/', $target)) {
-        if ($target[0] !== '@') {
-            $target = '@' . $target;
-        }
-        $chatRes = apiPost('getChat', ['chat_id' => $target]);
-        if ($chatRes !== null && !empty($chatRes['ok'])) {
-            $realId = (string)$chatRes['result']['id'];
-        }
+    $realId = resolveChannelId($arg);
+    if ($realId === null) {
+        sendPlainText($chatId, "❌ کانال پیدا نشد. لطفاً از آیدی عددی کانال استفاده کنید.");
+        return;
     }
 
     $owner = getChannelOwner($realId);
@@ -249,17 +290,10 @@ function handleHistory($chatId, $userId, string $arg): void {
         return;
     }
 
-    $target = trim($arg);
-    $realId = $target;
-
-    if (!preg_match('/^-?\d+$/', $target)) {
-        if ($target[0] !== '@') {
-            $target = '@' . $target;
-        }
-        $chatRes = apiPost('getChat', ['chat_id' => $target]);
-        if ($chatRes !== null && !empty($chatRes['ok'])) {
-            $realId = (string)$chatRes['result']['id'];
-        }
+    $realId = resolveChannelId($arg);
+    if ($realId === null) {
+        sendPlainText($chatId, "❌ کانال پیدا نشد. لطفاً از آیدی عددی کانال استفاده کنید.");
+        return;
     }
 
     $owner = getChannelOwner($realId);
@@ -287,8 +321,6 @@ function handleHistory($chatId, $userId, string $arg): void {
     sendPlainText($chatId, $msg);
 }
 
-// ---------------- هندلر دکمه‌های شیشه‌ای (Callback Query) ----------------
-
 function handleCallbackQuery(array $cb): void {
     $cbId = $cb['id'] ?? null;
     $data = $cb['data'] ?? '';
@@ -311,7 +343,6 @@ function handleCallbackQuery(array $cb): void {
         return;
     }
 
-    // بررسی عضویت اجباری قبل از کار با دکمه‌های منو
     $check = checkUserForceJoin($userId, false);
     if (!$check['ok']) {
         answerCallbackQuery($cbId, '⚠️ ابتدا در کانال‌های معرفی شده عضو شوید.', true);
@@ -340,8 +371,6 @@ function handleCallbackQuery(array $cb): void {
     }
 }
 
-// ---------------- پردازش پیام‌های متنی ----------------
-
 function handleTextMessage(array $message): void {
     $chatId = $message['chat']['id'] ?? null;
     $chatType = $message['chat']['type'] ?? 'private';
@@ -352,7 +381,6 @@ function handleTextMessage(array $message): void {
         return;
     }
 
-    // نادیده گرفتن پیام‌های عادی داخل کانال یا گروه
     if ($chatType !== 'private' && strpos($text, '/') !== 0) {
         return;
     }
@@ -362,7 +390,6 @@ function handleTextMessage(array $message): void {
         return;
     }
 
-    // اگر کاربر /start زد، ۲ کانال تصادفی جدید برایش انتخاب شود
     $resetForce = ($cmd === 'start');
     $forceCheck = checkUserForceJoin($userId, $resetForce);
     if (!$forceCheck['ok']) {
@@ -380,8 +407,12 @@ function handleTextMessage(array $message): void {
             break;
 
         case 'status':
-            $dbOk = (REDIS_URL !== '' && REDIS_TOKEN !== '') ? '✅ متصل' : '❌ قطع';
-            sendPlainText($chatId, "🤖 *وضعیت ربات:* آنلاین\n🗄 *دیتابیس Redis:* {$dbOk}\n🕒 *زمان سرور:* `" . date('Y-m-d H:i:s') . "`");
+            $msg = "🤖 *وضعیت ربات:* آنلاین\n🕒 *زمان سرور:* `" . date('Y-m-d H:i:s') . "`";
+            if (isBotOwner($userId)) {
+                $dbOk = (REDIS_URL !== '' && REDIS_TOKEN !== '') ? '✅ متصل' : '❌ قطع';
+                $msg .= "\n🗄 *دیتابیس Redis:* {$dbOk}";
+            }
+            sendPlainText($chatId, $msg);
             break;
 
         case 'connect':
@@ -400,7 +431,6 @@ function handleTextMessage(array $message): void {
             handleHistory($chatId, $userId, (string)$arg);
             break;
 
-        // ---------------- دستورات مخصوص سازنده ربات (Creator Only) ----------------
         case 'admin':
             if (!isBotOwner($userId)) {
                 sendPlainText($chatId, "⛔ این دستور مخصوص سازنده ربات است.");
@@ -441,12 +471,12 @@ function handleTextMessage(array $message): void {
             sendPlainText($chatId, "✅ کانال `{$arg}` به لیست اد اجباری اضافه شد.");
             break;
 
-        case 'removeforce':
+        case 'delforce':
             if (!isBotOwner($userId)) {
                 return;
             }
             if ($arg === '') {
-                sendPlainText($chatId, "❌ مثال: `/removeforce @channel`");
+                sendPlainText($chatId, "❌ مثال: `/delforce @channel`");
                 return;
             }
             if (removeForceChannelFromPool($arg)) {
@@ -499,8 +529,6 @@ function handleTextMessage(array $message): void {
     }
 }
 
-// ---------------- ردیابی و گزارش خروج اعضا ----------------
-
 function processMemberLeft(array $chat, array $user, ?array $actor = null): void {
     if (!empty($user['is_bot'])) {
         return;
@@ -508,6 +536,12 @@ function processMemberLeft(array $chat, array $user, ?array $actor = null): void
 
     $channelId = $chat['id'] ?? null;
     if (!$channelId) {
+        return;
+    }
+
+    $channelIdStr = (string)$channelId;
+    $ownerId = getChannelOwner($channelIdStr);
+    if (!$ownerId) {
         return;
     }
 
@@ -522,22 +556,12 @@ function processMemberLeft(array $chat, array $user, ?array $actor = null): void
 
     $timeStr = date('Y/m/d - H:i:s');
 
-    // ذخیره در تاریخچه دیتابیس
-    saveLeaveHistory($channelId, [
+    saveLeaveHistory($channelIdStr, [
         'user_id' => $userId,
         'name' => $fullName,
         'username' => $username,
         'time' => $timeStr,
     ]);
-
-    // پیدا کردن صاحب کانال برای ارسال گزارش
-    $ownerId = getChannelOwner($channelId);
-    if (!$ownerId && BOT_OWNER_ID !== '') {
-        $ownerId = BOT_OWNER_ID;
-    }
-    if (!$ownerId) {
-        return;
-    }
 
     $usernameLine = $username !== '' ? "@{$username}" : 'ندارد';
     $channelLine = $channelUsername !== '' ? "{$channelTitle} ({$channelUsername})" : $channelTitle;
@@ -550,7 +574,7 @@ function processMemberLeft(array $chat, array $user, ?array $actor = null): void
 
     $report = "📤 *گزارش خروج عضو از کانال*\n\n"
             . "📢 *کانال:* {$channelLine}\n"
-            . "🆔 *آیدی کانال:* `{$channelId}`\n"
+            . "🆔 *آیدی کانال:* `{$channelIdStr}`\n"
             . "━━━━━━━━━━━━━━\n"
             . "👤 *نام کاربر:* {$fullName}\n"
             . "🔖 *یوزرنیم:* {$usernameLine}\n"
