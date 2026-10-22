@@ -42,13 +42,59 @@ function parseCommand(string $text): array {
     return [strtolower($m[1]), isset($m[2]) ? trim($m[2]) : ''];
 }
 
-function checkSingleChannelMembership(string $channelRef, $userId): bool {
+function checkBotIsAdminInChannel(string $channelRef): array {
+    $channelRef = trim($channelRef);
+    if ($channelRef === '') {
+        return ['ok' => false, 'error' => 'نام کانال خالی است.'];
+    }
+    $ref = $channelRef;
+    if ($ref[0] !== '@' && !preg_match('/^-?\d+$/', $ref)) {
+        $ref = '@' . $ref;
+    }
+    $chatRes = apiPost('getChat', ['chat_id' => $ref]);
+    if ($chatRes === null || empty($chatRes['ok'])) {
+        return ['ok' => false, 'error' => 'کانال پیدا نشد یا ربات به آن دسترسی ندارد.'];
+    }
+    $realId = (string)$chatRes['result']['id'];
+    $title = $chatRes['result']['title'] ?? 'بدون نام';
+    $username = isset($chatRes['result']['username']) ? '@' . $chatRes['result']['username'] : '';
+
+    $botId = getBotId();
+    if ($botId === null) {
+        return ['ok' => false, 'error' => 'شناسایی هویت ربات ممکن نشد.'];
+    }
+    $memberRes = apiPost('getChatMember', [
+        'chat_id' => $realId,
+        'user_id' => $botId,
+    ]);
+    if ($memberRes === null || empty($memberRes['ok'])) {
+        return ['ok' => false, 'error' => 'بررسی وضعیت ربات در کانال ممکن نشد.'];
+    }
+    $status = $memberRes['result']['status'] ?? '';
+    if (!in_array($status, ['administrator', 'creator'], true)) {
+        return ['ok' => false, 'error' => 'ربات در این کانال ادمین نیست.'];
+    }
+    return [
+        'ok' => true,
+        'real_id' => $realId,
+        'title' => $title,
+        'username' => $username,
+    ];
+}
+
+function checkSingleChannelMembership(string $channelRef, $userId): ?bool {
     $res = apiPost('getChatMember', [
         'chat_id' => $channelRef,
         'user_id' => $userId,
     ]);
-    if ($res === null || empty($res['ok'])) {
-        return true;
+    if ($res === null) {
+        error_log('[ForceJoin] getChatMember null for channel=' . $channelRef . ' user=' . $userId);
+        return null;
+    }
+    if (empty($res['ok'])) {
+        $desc = $res['description'] ?? 'unknown';
+        error_log('[ForceJoin] getChatMember error for channel=' . $channelRef . ' user=' . $userId . ' desc=' . $desc);
+        return null;
     }
     $status = $res['result']['status'] ?? 'left';
     return in_array($status, ['creator', 'administrator', 'member'], true);
@@ -64,7 +110,12 @@ function checkUserForceJoin($userId, bool $reset = false): array {
     }
     $missing = [];
     foreach ($assigned as $ch) {
-        if (!checkSingleChannelMembership($ch, $userId)) {
+        $result = checkSingleChannelMembership($ch, $userId);
+        if ($result === null) {
+            error_log('[ForceJoin] Skipping channel=' . $ch . ' for user=' . $userId . ' due to API error');
+            continue;
+        }
+        if ($result === false) {
             $missing[] = $ch;
         }
     }
@@ -126,54 +177,80 @@ function sendStartMenu($chatId): void {
 
 function getHelpText(): string {
     return "📖 راهنمای استفاده از ربات آنفالویاب\n"
-         . "این ربات به شما کمک می‌کند بفهمید چه اعضایی از کانال شما خارج می‌شوند.\n"
-         . "⚙️ مرحله ۱: ادمین کردن ربات\n"
-         . "ابتدا ربات آنفالویاب را در کانال خود ادمین کنید با دسترسی مدیریت اعضا.\n"
-         . "بدون این دسترسی، ربات نمی‌تواند خروج اعضا را تشخیص دهد.\n"
-         . "🔗 مرحله ۲: اتصال کانال به ربات\n"
-         . "برای اتصال کانال، دستور زیر را در همین چت ارسال کنید.\n"
-         . "با فاصله بعد از کلمه add یک فاصله بگذارید و سپس آیدی کانال خود را بنویسید.\n"
-         . "ساختار دستور:\n"
-         . "/add آیدی کانال شما\n"
-         . "نمونه‌های واقعی و درست:\n"
-         . "/add @mynews\n\n"
+         . "━━━━━━━━━━━━━━━━━━\n\n"
+         . "این ربات به شما کمک می‌کند بفهمید چه اعضایی از کانال شما خارج می‌شوند.\n\n"
 
-         . "🛠 دستورات کاربردی\n"
-         . "مشاهده لیست کانال‌های متصل شما:\n"
-         . "/my\n"
-         . "بررسی وضعیت ربات:\n"
-         . "/status\n"
-         . "بازگشت به منوی اصلی:\n"
-         . "/start\n"
-         . "مشاهده تاریخچه آخرین خروج‌ها از یک کانال:\n"
-         . "/history mynews\n"
-         . "قطع اتصال کانال از ربات:\n"
-         . "/remove mynews\n"
-         . "گزارش باگ یا مشکل:\n"
+         . "━━━━━━━━━━━━━━━━━━\n"
+         . "⚙️ مرحله ۱: ادمین کردن ربات\n\n"
+         . "ابتدا ربات آنفالویاب را در کانال خود ادمین کنید با دسترسی مدیریت اعضا.\n"
+         . "بدون این دسترسی، ربات نمی‌تواند خروج اعضا را تشخیص دهد.\n\n"
+
+         . "━━━━━━━━━━━━━━━━━━\n"
+         . "🔗 مرحله ۲: اتصال کانال به ربات\n\n"
+         . "برای اتصال کانال، دستور زیر را در همین چت ارسال کنید.\n"
+         . "بلافاصله بعد از کلمه add یک فاصله بگذارید و سپس نام یا آیدی کانال خود را بنویسید.\n\n"
+         . "ساختار دستور:\n\n"
+         . "/add نام یا آیدی کانال شما\n\n"
+         . "نمونه‌های واقعی و درست:\n\n"
+         . "اگر آیدی کانال شما mynews است، دقیقاً این را بفرستید:\n\n"
+         . "/add mynews\n\n"
+         . "اگر آیدی کانال شما با علامت @ شروع می‌شود، این را بفرستید:\n\n"
+         . "/add @mynews\n\n"
+         . "اگر آیدی عددی کانال شما منفی است، همان عدد را وارد کنید:\n\n"
+         . "/add -1001234567890\n\n"
+
+         . "━━━━━━━━━━━━━━━━━━\n"
+         . "⚠️ نکته بسیار مهم\n\n"
+         . "دستور نمونه را عیناً و بدون تغییر نفرستید. بعد از کلمه add باید نام واقعی کانال خود را بنویسید.\n\n"
+         . "اشتباه (این را نفرستید):\n\n"
+         . "/add نام یا آیدی کانال شما\n\n"
+         . "درست (اگر آیدی کانال شما mynews است):\n\n"
+         . "/add mynews\n\n"
+
+         . "━━━━━━━━━━━━━━━━━━\n"
+         . "🛠 دستورات کاربردی\n\n"
+         . "مشاهده لیست کانال‌های متصل شما:\n\n"
+         . "/my\n\n"
+         . "بررسی وضعیت ربات:\n\n"
+         . "/status\n\n"
+         . "بازگشت به منوی اصلی:\n\n"
+         . "/start\n\n"
+         . "مشاهده تاریخچه آخرین خروج‌ها از یک کانال:\n\n"
+         . "/history mynews\n\n"
+         . "قطع اتصال کانال از ربات:\n\n"
+         . "/remove mynews\n\n"
+         . "گزارش باگ یا مشکل:\n\n"
          . "/bug متن مشکل خود را اینجا بنویسید";
 }
 
 function getAdminHelpText(): string {
     return "👑 پنل مدیریت ربات آنفالویاب (مخصوص مالک)\n"
-         . "برای امنیت بیشتر، این پنل را فقط در چت خصوصی با ربات باز کنید.\n"
+         . "━━━━━━━━━━━━━━━━━━\n\n"
+         . "برای امنیت بیشتر، این پنل را فقط در چت خصوصی با ربات باز کنید.\n\n"
 
-         . "📊 دستورات مشاهده\n"
-         . "لیست کامل تمام کانال‌های ثبت‌شده در ربات به همراه مالک:\n"
-         . "/zk9xch\n"
-         . "نمایش لیست کانال‌های موجود در استخر عضویت اجباری:\n"
+         . "📊 دستورات مشاهده\n\n"
+         . "لیست کامل تمام کانال‌های ثبت‌شده در ربات:\n\n"
+         . "/zk9xch\n\n"
+         . "نمایش لیست کانال‌های موجود در استخر عضویت اجباری:\n\n"
          . "/zk9xfl\n\n"
+         . "دیباگ سیستم عضویت اجباری (بدون آیدی برای وضعیت کانال‌ها، با آیدی برای تست کاربر خاص):\n\n"
+         . "/zk9xst\n\n"
+         . "/zk9xst 123456789\n\n"
 
-         . "⚙️ دستورات تنظیمی\n"
-         . "افزودن کانال به استخر عضویت اجباری:\n"
-         . "/zk9xfa mychannel\n"
-         . "حذف کانال از استخر عضویت اجباری:\n"
-         . "/zk9xfd mychannel\n"
-         . "تغییر متن دکمه‌ی اسپانسر:\n"
-         . "/zk9xsp متن جدید اسپانسر\n"
-         . "تغییر متن دکمه‌ی حمایت مالی:\n"
+         . "━━━━━━━━━━━━━━━━━━\n"
+         . "⚙️ دستورات تنظیمی\n\n"
+         . "افزودن کانال به استخر عضویت اجباری:\n\n"
+         . "/zk9xfa mychannel\n\n"
+         . "حذف کانال از استخر عضویت اجباری:\n\n"
+         . "/zk9xfd mychannel\n\n"
+         . "تغییر متن دکمه‌ی اسپانسر:\n\n"
+         . "/zk9xsp متن جدید اسپانسر\n\n"
+         . "تغییر متن دکمه‌ی حمایت مالی:\n\n"
          . "/zk9xdn متن جدید حمایت مالی\n\n"
-         . "⚠️ توصیه\n"
-         . "این دستورات را در اختیار هیچ‌کس قرار ندهید و در گروه‌های عمومی اجرا نکنید.";
+
+         . "━━━━━━━━━━━━━━━━━━\n"
+         . "⚠️ توصیه\n\n"
+         . "این دستورات را در اختیار هیچ‌کس قرار ندهید.";
 }
 
 function resolveChannelId(string $target): ?string {
@@ -460,6 +537,8 @@ function handleTextMessage(array $message): void {
             if (isBotOwner($userId)) {
                 $dbOk = (REDIS_URL !== '' && REDIS_TOKEN !== '') ? '✅ متصل' : '❌ قطع';
                 $msg .= "\n🗄 دیتابیس Redis: " . $dbOk;
+                $poolSize = count(getForceChannelsPool());
+                $msg .= "\n📦 تعداد کانال‌های استخر عضویت اجباری: " . $poolSize;
             }
             sendPlainText($chatId, $msg);
             break;
@@ -541,8 +620,18 @@ function handleTextMessage(array $message): void {
                 sendPlainText($chatId, "❌ نمونه: /zk9xfa mychannel");
                 return;
             }
-            addForceChannelToPool($arg);
-            sendPlainText($chatId, "✅ کانال " . $arg . " به استخر عضویت اجباری اضافه شد.");
+            $check = checkBotIsAdminInChannel($arg);
+            if (!$check['ok']) {
+                sendPlainText($chatId, "❌ " . $check['error'] . "\n\n"
+                    . "ابتدا ربات را در کانال ادمین کنید با دسترسی مدیریت اعضا، سپس دوباره تلاش کنید.");
+                return;
+            }
+            if (!addForceChannelToPool($arg)) {
+                sendPlainText($chatId, "❌ خطا در ذخیره‌سازی در دیتابیس. لطفاً دوباره تلاش کنید یا لاگ‌ها را بررسی کنید.");
+                return;
+            }
+            $displayTitle = $check['title'] ?: $arg;
+            sendPlainText($chatId, "✅ کانال " . $displayTitle . " با موفقیت به استخر عضویت اجباری اضافه شد.");
             break;
 
         case 'zk9xfd':
@@ -569,11 +658,93 @@ function handleTextMessage(array $message): void {
                 sendPlainText($chatId, "📭 استخر عضویت اجباری خالی است.");
                 return;
             }
-            $msg = "📢 کانال‌های موجود در استخر عضویت اجباری:\n\n";
+            $msg = "📢 کانال‌های موجود در استخر عضویت اجباری (" . count($pool) . " کانال):\n\n";
             foreach ($pool as $idx => $ch) {
                 $num = $idx + 1;
                 $msg .= $num . ". " . $ch . "\n";
             }
+            sendPlainText($chatId, $msg);
+            break;
+
+        case 'zk9xst':
+            if (!isBotOwner($userId)) {
+                return;
+            }
+            $pool = getForceChannelsPool();
+            $msg = "🔍 دیباگ سیستم عضویت اجباری\n"
+                 . "━━━━━━━━━━━━━━━━━━\n\n";
+            $msg .= "📦 استخر: " . count($pool) . " کانال\n\n";
+
+            if (empty($pool)) {
+                $msg .= "⚠️ استخر خالی است. هیچ کاربری عضویت اجباری نمی‌بیند.\n"
+                      . "با دستور /zk9xfa کانال اضافه کنید.\n";
+            } else {
+                foreach ($pool as $idx => $ch) {
+                    $num = $idx + 1;
+                    $adminCheck = checkBotIsAdminInChannel($ch);
+                    $msg .= $num . ". " . $ch . "\n";
+                    if ($adminCheck['ok']) {
+                        $msg .= "   ✅ ربات ادمین است\n";
+                        $msg .= "   نام: " . ($adminCheck['title'] ?: 'بدون نام') . "\n";
+                        $msg .= "   آیدی: " . $adminCheck['real_id'] . "\n";
+                    } else {
+                        $msg .= "   ❌ " . $adminCheck['error'] . "\n";
+                        $msg .= "   این کانال عملاً غیرفعال است.\n";
+                    }
+                    $msg .= "\n";
+                }
+            }
+
+            $targetUserId = null;
+            if ($arg !== '') {
+                $targetUserId = preg_replace('/[^0-9-]/', '', $arg);
+                if ($targetUserId === '') {
+                    $targetUserId = null;
+                }
+            }
+
+            if ($targetUserId !== null) {
+                $msg .= "━━━━━━━━━━━━━━━━━━\n"
+                      . "👤 تست برای کاربر: " . $targetUserId . "\n\n";
+
+                if (isBotOwner($targetUserId)) {
+                    $msg .= "⚠️ این کاربر مالک ربات است و همیشه از عضویت اجباری معاف می‌شود.\n";
+                } else {
+                    $assignmentKey = "user_force_channels:" . $targetUserId;
+                    $assignedRaw = redisGet($assignmentKey);
+                    $assigned = $assignedRaw ? json_decode($assignedRaw, true) : [];
+
+                    if (empty($assigned) || !is_array($assigned)) {
+                        $msg .= "هیچ کانالی به این کاربر اختصاص نیافته.\n"
+                              . "با زدن /start در حساب کاربر، اختصاص انجام می‌شود.\n";
+                    } else {
+                        $msg .= "کانال‌های اختصاص‌یافته:\n";
+                        $missing = [];
+                        foreach ($assigned as $ch) {
+                            $memberResult = checkSingleChannelMembership($ch, $targetUserId);
+                            if ($memberResult === true) {
+                                $msg .= "  " . $ch . " : ✅ عضو است\n";
+                            } elseif ($memberResult === false) {
+                                $msg .= "  " . $ch . " : ❌ عضو نیست (باید مسدود شود)\n";
+                                $missing[] = $ch;
+                            } else {
+                                $msg .= "  " . $ch . " : ⚠️ خطا در بررسی\n";
+                            }
+                        }
+                        $msg .= "\n";
+                        if (empty($missing)) {
+                            $msg .= "نتیجه: این کاربر نباید عضویت اجباری ببیند (در همه عضو است یا خطا).\n";
+                        } else {
+                            $msg .= "نتیجه: این کاربر باید عضویت اجباری ببیند (" . count($missing) . " کانال کم).\n";
+                        }
+                    }
+                }
+            } else {
+                $msg .= "━━━━━━━━━━━━━━━━━━\n"
+                      . "برای تست یک کاربر خاص، آیدی عددی او را بعد از دستور بنویسید:\n\n"
+                      . "/zk9xst 123456789";
+            }
+
             sendPlainText($chatId, $msg);
             break;
 

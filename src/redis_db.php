@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 function redisCommand(string $path): ?string {
     if (REDIS_URL === '' || REDIS_TOKEN === '') {
+        error_log('[Redis] REDIS_URL or REDIS_TOKEN is empty');
         return null;
     }
     $url = rtrim(REDIS_URL, '/') . $path;
@@ -15,7 +16,7 @@ function redisCommand(string $path): ?string {
     ]);
     $res = curl_exec($ch);
     if ($res === false) {
-        error_log('[Redis] curl failed: ' . curl_error($ch));
+        error_log('[Redis] curl failed: ' . curl_error($ch) . ' | path=' . $path);
         return null;
     }
     return $res;
@@ -84,17 +85,48 @@ function redisLRange(string $key, int $start = 0, int $stop = 49): array {
     return is_array($result) ? $result : [];
 }
 
-function redisSAdd(string $key, string $member): void {
-    redisCommand('/sadd/' . rawurlencode($key) . '/' . rawurlencode($member));
+function redisSAdd(string $key, string $member): bool {
+    $res = redisCommand('/sadd/' . rawurlencode($key) . '/' . rawurlencode($member));
+    if ($res === null) {
+        error_log('[Redis] SADD null response for key=' . $key . ' member=' . $member);
+        return false;
+    }
+    $json = json_decode($res, true);
+    if (!is_array($json) || !array_key_exists('result', $json)) {
+        error_log('[Redis] SADD failed: ' . substr($res, 0, 300));
+        return false;
+    }
+    return true;
 }
 
-function redisSRem(string $key, string $member): void {
-    redisCommand('/srem/' . rawurlencode($key) . '/' . rawurlencode($member));
+function redisSRem(string $key, string $member): bool {
+    $res = redisCommand('/srem/' . rawurlencode($key) . '/' . rawurlencode($member));
+    if ($res === null) {
+        error_log('[Redis] SREM null response for key=' . $key . ' member=' . $member);
+        return false;
+    }
+    $json = json_decode($res, true);
+    if (!is_array($json) || !array_key_exists('result', $json)) {
+        error_log('[Redis] SREM failed: ' . substr($res, 0, 300));
+        return false;
+    }
+    return true;
 }
 
 function redisSMembers(string $key): array {
-    $result = redisParseResult(redisCommand('/smembers/' . rawurlencode($key)));
-    return is_array($result) ? $result : [];
+    $res = redisCommand('/smembers/' . rawurlencode($key));
+    if ($res === null) {
+        return [];
+    }
+    $json = json_decode($res, true);
+    if (!is_array($json) || !array_key_exists('result', $json)) {
+        error_log('[Redis] SMEMBERS failed: ' . substr($res, 0, 300));
+        return [];
+    }
+    if (!is_array($json['result'])) {
+        return [];
+    }
+    return array_values($json['result']);
 }
 
 function setChannelOwner($channelId, $ownerId, string $title = '', string $username = ''): void {
@@ -177,15 +209,15 @@ function getForceChannelsPool(): array {
     return redisSMembers('force_channels_pool');
 }
 
-function addForceChannelToPool(string $channelRef): void {
+function addForceChannelToPool(string $channelRef): bool {
     $channelRef = trim($channelRef);
     if ($channelRef === '') {
-        return;
+        return false;
     }
     if ($channelRef[0] !== '@' && !preg_match('/^-?\d+$/', $channelRef)) {
         $channelRef = '@' . $channelRef;
     }
-    redisSAdd('force_channels_pool', $channelRef);
+    return redisSAdd('force_channels_pool', $channelRef);
 }
 
 function removeForceChannelFromPool(string $channelRef): bool {
@@ -194,11 +226,14 @@ function removeForceChannelFromPool(string $channelRef): bool {
         $channelRef = '@' . $channelRef;
     }
     $pool = getForceChannelsPool();
-    if (!in_array($channelRef, $pool, true)) {
+    $normalized = [];
+    foreach ($pool as $ch) {
+        $normalized[] = trim((string)$ch);
+    }
+    if (!in_array($channelRef, $normalized, true)) {
         return false;
     }
-    redisSRem('force_channels_pool', $channelRef);
-    return true;
+    return redisSRem('force_channels_pool', $channelRef);
 }
 
 function assignRandomForceChannels($userId, bool $reset = false): array {
@@ -224,7 +259,6 @@ function assignRandomForceChannels($userId, bool $reset = false): array {
         }
     }
 
-    $pool = array_values($pool);
     if (count($pool) <= 2) {
         $selected = $pool;
     } else {
