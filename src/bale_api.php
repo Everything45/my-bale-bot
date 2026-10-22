@@ -1,5 +1,5 @@
 <?php
-// src / bale_api.php
+// src/bale_api.php
 
 declare(strict_types=1);
 

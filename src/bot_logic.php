@@ -1,5 +1,5 @@
 <?php
-// src /bot_logic.php
+// src/bot_logic.php
 declare(strict_types=1);
 
 function finishRequest(): void {
