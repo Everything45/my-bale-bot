@@ -1,4 +1,5 @@
 <?php
+// src /bot_logic.php
 declare(strict_types=1);
 
 function finishRequest(): void {
@@ -93,10 +94,18 @@ function checkSingleChannelMembership(string $channelRef, $userId): ?bool {
     }
     if (empty($res['ok'])) {
         $desc = $res['description'] ?? 'unknown';
-        error_log('[ForceJoin] getChatMember error for channel=' . $channelRef . ' user=' . $userId . ' desc=' . $desc);
+        error_log('[ForceJoin] getChatMember error for channel=' . $channelRef
+            . ' user=' . $userId . ' desc=' . $desc);
         return null;
     }
     $status = $res['result']['status'] ?? 'left';
+    $isMemberField = $res['result']['is_member'] ?? null;
+
+    // اگر وضعیت restricted بود، از فیلد is_member استفاده کن
+    if ($status === 'restricted') {
+        return (bool)$isMemberField;
+    }
+
     return in_array($status, ['creator', 'administrator', 'member'], true);
 }
 
@@ -111,10 +120,15 @@ function checkUserForceJoin($userId, bool $reset = false): array {
     $missing = [];
     foreach ($assigned as $ch) {
         $result = checkSingleChannelMembership($ch, $userId);
+
         if ($result === null) {
-            error_log('[ForceJoin] Skipping channel=' . $ch . ' for user=' . $userId . ' due to API error');
+            // ❌ خطا در بررسی → Fail-Closed: کانال را به‌عنوان "عضو نشده" حساب کن
+            error_log('[ForceJoin] API error for channel=' . $ch
+                . ' user=' . $userId . ' — treating as NOT-MEMBER (fail-closed)');
+            $missing[] = $ch;
             continue;
         }
+
         if ($result === false) {
             $missing[] = $ch;
         }
@@ -124,7 +138,6 @@ function checkUserForceJoin($userId, bool $reset = false): array {
         'missing' => $missing,
     ];
 }
-
 function sendForceJoinPrompt($chatId, array $missingChannels): void {
     $msg = "⚠️ عضویت اجباری\n\n"
          . "برای استفاده از امکانات ربات آنفالویاب، ابتدا در کانال‌های زیر عضو شوید و سپس دکمه‌ی «عضو شدم» را بزنید.\n\n";

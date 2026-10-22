@@ -1,4 +1,6 @@
 <?php
+// src / bale_api.php
+
 declare(strict_types=1);
 
 function apiPost(string $method, array $payload): ?array {

@@ -1,133 +1,133 @@
 <?php
+// src/redis_db.php
 declare(strict_types=1);
 
-function redisCommand(string $path): ?string {
+/**
+ * ارسال یک دستور Redis به Upstash REST API با فرمت JSON.
+ * استفاده از POST با بدنه‌ی JSON از محدودیت طول URL و مشکلات
+ * URL-encode شدن JSON های طولانی جلوگیری می‌کند.
+ */
+function redisExec(array $command): ?array {
     if (REDIS_URL === '' || REDIS_TOKEN === '') {
         error_log('[Redis] REDIS_URL or REDIS_TOKEN is empty');
         return null;
     }
-    $url = rtrim(REDIS_URL, '/') . $path;
-    $ch = curl_init($url);
+    $ch = curl_init(rtrim(REDIS_URL, '/'));
     curl_setopt_array($ch, [
-        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . REDIS_TOKEN],
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($command, JSON_UNESCAPED_UNICODE),
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . REDIS_TOKEN,
+            'Content-Type: application/json',
+        ],
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_CONNECTTIMEOUT => 3,
         CURLOPT_TIMEOUT => 5,
     ]);
     $res = curl_exec($ch);
     if ($res === false) {
-        error_log('[Redis] curl failed: ' . curl_error($ch) . ' | path=' . $path);
-        return null;
-    }
-    return $res;
-}
-
-function redisParseResult(?string $res): mixed {
-    if ($res === null) {
+        error_log('[Redis] curl failed: ' . curl_error($ch) . ' | cmd=' . ($command[0] ?? '?'));
         return null;
     }
     $json = json_decode($res, true);
-    if (!is_array($json) || !array_key_exists('result', $json)) {
+    if (!is_array($json)) {
+        error_log('[Redis] invalid JSON: ' . substr($res, 0, 300));
+        return null;
+    }
+    if (isset($json['error'])) {
+        error_log('[Redis] error: ' . $json['error'] . ' | cmd=' . ($command[0] ?? '?'));
+        return null;
+    }
+    return $json;
+}
+
+function redisResult(?array $json): mixed {
+    if ($json === null || !array_key_exists('result', $json)) {
         return null;
     }
     return $json['result'];
 }
 
-function redisSet(string $key, string $value, ?int $ttl = null): void {
-    $path = '/set/' . rawurlencode($key) . '/' . rawurlencode($value);
+function redisSet(string $key, string $value, ?int $ttl = null): bool {
+    $cmd = ['SET', $key, $value];
     if ($ttl !== null) {
-        $path .= '?EX=' . $ttl;
+        $cmd[] = 'EX';
+        $cmd[] = (string)$ttl;
     }
-    redisCommand($path);
+    return redisExec($cmd) !== null;
 }
 
 function redisGet(string $key): ?string {
-    $result = redisParseResult(redisCommand('/get/' . rawurlencode($key)));
-    return $result === null ? null : (string)$result;
+    $res = redisResult(redisExec(['GET', $key]));
+    if ($res === null) {
+        return null;
+    }
+    // اگر Upstash مقدار JSON را از قبل decode کرده باشد، دوباره به رشته تبدیل می‌کنیم
+    if (is_array($res)) {
+        return json_encode($res, JSON_UNESCAPED_UNICODE);
+    }
+    return (string)$res;
 }
 
 function redisDel(string $key): void {
-    redisCommand('/del/' . rawurlencode($key));
+    redisExec(['DEL', $key]);
 }
 
-function redisHSet(string $key, string $field, string $value): void {
-    redisCommand('/hset/' . rawurlencode($key) . '/' . rawurlencode($field) . '/' . rawurlencode($value));
+function redisHSet(string $key, string $field, string $value): bool {
+    return redisExec(['HSET', $key, $field, $value]) !== null;
 }
 
+/**
+ * Upstash ممکن است HGETALL را به صورت آبجکت (associative) یا آرایه‌ی
+ * تخت (flat) برگرداند. همچنین مقادیر فیلدها ممکن است از قبل decode
+ * شده باشند؛ این تابع هر دو حالت را مدیریت می‌کند.
+ */
 function redisHGetAll(string $key): array {
-    $result = redisParseResult(redisCommand('/hgetall/' . rawurlencode($key)));
-    if (!is_array($result)) {
+    $result = redisResult(redisExec(['HGETALL', $key]));
+    if (!is_array($result) || empty($result)) {
         return [];
     }
-    $isFlat = !empty($result) && array_keys($result) === range(0, count($result) - 1);
+    $keys = array_keys($result);
+    $isFlat = $keys === range(0, count($result) - 1);
     if (!$isFlat) {
-        return $result;
+        return $result; // از قبل associative
     }
     $pairs = [];
     $count = count($result);
     for ($i = 0; $i + 1 < $count; $i += 2) {
-        $pairs[(string)$result[$i]] = (string)$result[$i + 1];
+        $pairs[(string)$result[$i]] = $result[$i + 1];
     }
     return $pairs;
 }
 
 function redisHDel(string $key, string $field): void {
-    redisCommand('/hdel/' . rawurlencode($key) . '/' . rawurlencode($field));
+    redisExec(['HDEL', $key, $field]);
 }
 
 function redisLPushTrim(string $key, string $value, int $max = 50): void {
-    redisCommand('/lpush/' . rawurlencode($key) . '/' . rawurlencode($value));
-    redisCommand('/ltrim/' . rawurlencode($key) . '/0/' . ($max - 1));
+    redisExec(['LPUSH', $key, $value]);
+    redisExec(['LTRIM', $key, '0', (string)($max - 1)]);
 }
 
 function redisLRange(string $key, int $start = 0, int $stop = 49): array {
-    $result = redisParseResult(redisCommand('/lrange/' . rawurlencode($key) . '/' . $start . '/' . $stop));
-    return is_array($result) ? $result : [];
+    $res = redisResult(redisExec(['LRANGE', $key, (string)$start, (string)$stop]));
+    return is_array($res) ? $res : [];
 }
 
 function redisSAdd(string $key, string $member): bool {
-    $res = redisCommand('/sadd/' . rawurlencode($key) . '/' . rawurlencode($member));
-    if ($res === null) {
-        error_log('[Redis] SADD null response for key=' . $key . ' member=' . $member);
-        return false;
-    }
-    $json = json_decode($res, true);
-    if (!is_array($json) || !array_key_exists('result', $json)) {
-        error_log('[Redis] SADD failed: ' . substr($res, 0, 300));
-        return false;
-    }
-    return true;
+    return redisExec(['SADD', $key, $member]) !== null;
 }
 
 function redisSRem(string $key, string $member): bool {
-    $res = redisCommand('/srem/' . rawurlencode($key) . '/' . rawurlencode($member));
-    if ($res === null) {
-        error_log('[Redis] SREM null response for key=' . $key . ' member=' . $member);
-        return false;
-    }
-    $json = json_decode($res, true);
-    if (!is_array($json) || !array_key_exists('result', $json)) {
-        error_log('[Redis] SREM failed: ' . substr($res, 0, 300));
-        return false;
-    }
-    return true;
+    return redisExec(['SREM', $key, $member]) !== null;
 }
 
 function redisSMembers(string $key): array {
-    $res = redisCommand('/smembers/' . rawurlencode($key));
-    if ($res === null) {
-        return [];
-    }
-    $json = json_decode($res, true);
-    if (!is_array($json) || !array_key_exists('result', $json)) {
-        error_log('[Redis] SMEMBERS failed: ' . substr($res, 0, 300));
-        return [];
-    }
-    if (!is_array($json['result'])) {
-        return [];
-    }
-    return array_values($json['result']);
+    $res = redisResult(redisExec(['SMEMBERS', $key]));
+    return is_array($res) ? array_values($res) : [];
 }
+
+/* ─────────────────────── توابع دامنه ─────────────────────── */
 
 function setChannelOwner($channelId, $ownerId, string $title = '', string $username = ''): void {
     $channelIdStr = (string)$channelId;
@@ -142,7 +142,9 @@ function setChannelOwner($channelId, $ownerId, string $title = '', string $usern
         'updated_at' => date('Y-m-d H:i:s'),
     ], JSON_UNESCAPED_UNICODE);
 
-    redisHSet('all_channels_map', $channelIdStr, $info);
+    if (!redisHSet('all_channels_map', $channelIdStr, $info)) {
+        error_log('[Channel] Failed to store channel info for ' . $channelIdStr);
+    }
 }
 
 function getChannelOwner($channelId): ?string {
@@ -152,10 +154,17 @@ function getChannelOwner($channelId): ?string {
 function getAllChannelsMap(): array {
     $raw = redisHGetAll('all_channels_map');
     $result = [];
-    foreach ($raw as $chId => $infoJson) {
-        $decoded = json_decode((string)$infoJson, true);
+    foreach ($raw as $chId => $infoVal) {
+        // Upstash ممکن است مقدار JSON را از قبل به آرایه decode کرده باشد
+        if (is_array($infoVal)) {
+            $decoded = $infoVal;
+        } else {
+            $decoded = json_decode((string)$infoVal, true);
+        }
         if (is_array($decoded)) {
             $result[(string)$chId] = $decoded;
+        } else {
+            error_log('[Channel] Unparseable info for ch=' . $chId);
         }
     }
     return $result;
@@ -197,6 +206,10 @@ function getLeaveHistory($channelId): array {
     $raw = redisLRange('leave_history:' . (string)$channelId, 0, 49);
     $result = [];
     foreach ($raw as $item) {
+        if (is_array($item)) {
+            $result[] = $item;
+            continue;
+        }
         $decoded = json_decode((string)$item, true);
         if (is_array($decoded)) {
             $result[] = $decoded;
@@ -248,7 +261,7 @@ function assignRandomForceChannels($userId, bool $reset = false): array {
 
     if (!$reset) {
         $existingRaw = redisGet($key);
-        if ($existingRaw) {
+        if ($existingRaw !== null && $existingRaw !== '') {
             $existing = json_decode($existingRaw, true);
             if (is_array($existing) && !empty($existing)) {
                 $valid = array_values(array_intersect($existing, $pool));
