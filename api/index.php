@@ -1,5 +1,5 @@
-
 <?php
+declare(strict_types=1);
 
 date_default_timezone_set('Asia/Tehran');
 
@@ -9,7 +9,9 @@ define('REDIS_TOKEN', trim(getenv('UPSTASH_REDIS_REST_TOKEN') ?: ''));
 define('BOT_OWNER_ID', trim(getenv('BOT_OWNER_ID') ?: ''));
 
 if (BOT_TOKEN === '') {
-    http_response_code(500);
+    if (!headers_sent()) {
+        http_response_code(500);
+    }
     echo 'Error: BOT_TOKEN environment variable is missing.';
     exit;
 }
@@ -20,13 +22,17 @@ if (BOT_TOKEN === '') {
 $input = file_get_contents('php://input');
 
 if ($input === '' || $_SERVER['REQUEST_METHOD'] === 'GET') {
-    // امکان ست کردن خودکار وبهوک با فراخوانی ?setwebhook=1 در مرورگر
     if (isset($_GET['setwebhook'])) {
         $proto = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? 'https';
         $host  = $_SERVER['HTTP_HOST'] ?? '';
         $webhookUrl = $proto . '://' . $host . '/api/index.php';
         $res = apiPost('setWebhook', ['url' => $webhookUrl]);
-        header('Content-Type: application/json; charset=utf-8');
+        
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8');
+            http_response_code(200);
+        }
+        
         echo json_encode([
             'status' => 'Webhook Configuration Attempt',
             'webhook_url' => $webhookUrl,
@@ -35,14 +41,18 @@ if ($input === '' || $_SERVER['REQUEST_METHOD'] === 'GET') {
         exit;
     }
 
-    http_response_code(200);
+    if (!headers_sent()) {
+        http_response_code(200);
+    }
     echo '✅ Bale Bot is running successfully!';
     exit;
 }
 
 $update = json_decode($input, true);
 if (!is_array($update)) {
-    http_response_code(200);
+    if (!headers_sent()) {
+        http_response_code(200);
+    }
     echo 'OK';
     exit;
 }
@@ -52,7 +62,9 @@ if (!is_array($update)) {
 // ----------------------------------------------------
 if (isset($update['callback_query'])) {
     handleCallbackQuery($update['callback_query']);
-    http_response_code(200);
+    if (!headers_sent()) {
+        http_response_code(200);
+    }
     echo 'OK';
     exit;
 }
@@ -71,49 +83,65 @@ if (isset($update['message']['text'])) {
 
     if ($command === 'start' && $chatType === 'private' && $chatId) {
         sendStartMenu($chatId, $senderName);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 
     if ($command === 'help') {
         sendHelp($chatId);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 
     if ($command === 'connect') {
         handleConnect($chat, $message, $args);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 
     if ($command === 'disconnect') {
         handleDisconnect($chat, $message);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 
     if ($command === 'status') {
         handleStatus($chat);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 
     if ($command === 'mychannels') {
         handleMyChannels($chat, $message);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 
     if ($command === 'stats') {
         handleStats($chat);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 
     if ($command === 'settings') {
         sendSettingsMenu($chatId);
-        http_response_code(200);
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
         exit;
     }
 }
@@ -146,7 +174,6 @@ if (isset($update['chat_member'])) {
         dispatchLeaveAlert($user, $chat, $leaveType);
     }
 
-    // ثبت زمان عضویت برای اعضای جدید
     if (in_array($newStatus, ['member', 'administrator'], true) && $oldStatus === 'left') {
         $user = $chatMember['new_chat_member']['user'] ?? [];
         $chat = $chatMember['chat'] ?? [];
@@ -156,7 +183,6 @@ if (isset($update['chat_member'])) {
     }
 }
 
-// ثبت زمان عضویت از new_chat_members
 if (isset($update['message']['new_chat_members'])) {
     $chat = $update['message']['chat'] ?? [];
     if (!empty($chat['id'])) {
@@ -168,7 +194,9 @@ if (isset($update['message']['new_chat_members'])) {
     }
 }
 
-http_response_code(200);
+if (!headers_sent()) {
+    http_response_code(200);
+}
 echo 'OK';
 exit;
 
@@ -505,7 +533,6 @@ function dispatchLeaveAlert(array $user, array $chat, string $leaveType = 'left'
 
 function cleanText(string $text): string
 {
-    // حذف کاراکترهایی که باعث تداخل در Markdown بله می‌شوند
     return str_replace(['*', '_', '`', '[', ']'], '', $text);
 }
 
@@ -581,7 +608,6 @@ function sendWithRetry($chatId, string $text, int $maxRetries = 2): void
 
         if ($res !== null && !empty($res['ok'])) return;
 
-        // اگر به خاطر Markdown خطا داد، بدون فرمت ارسال شود
         if (isset($res['error_code']) && $res['error_code'] == 400) {
             apiPost('sendMessage', [
                 'chat_id' => $chatId,
@@ -800,7 +826,6 @@ function sendMessageWithKeyboard($chatId, string $text, ?array $replyMarkup = nu
 
     $res = apiPost('sendMessage', $payload);
     if ($res === null || empty($res['ok'])) {
-        // تلاش مجدد بدون Markdown در صورت بروز خطای فرمت
         unset($payload['parse_mode']);
         $payload['text'] = str_replace(['*', '`'], '', $text);
         apiPost('sendMessage', $payload);
@@ -849,4 +874,3 @@ function apiPost(string $method, array $payload): ?array
 
     return $json;
 }
-
