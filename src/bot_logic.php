@@ -94,14 +94,12 @@ function checkSingleChannelMembership(string $channelRef, $userId): ?bool {
     }
     if (empty($res['ok'])) {
         $desc = $res['description'] ?? 'unknown';
-        error_log('[ForceJoin] getChatMember error for channel=' . $channelRef
-            . ' user=' . $userId . ' desc=' . $desc);
+        error_log('[ForceJoin] getChatMember error for channel=' . $channelRef . ' user=' . $userId . ' desc=' . $desc);
         return null;
     }
     $status = $res['result']['status'] ?? 'left';
     $isMemberField = $res['result']['is_member'] ?? null;
 
-    // اگر وضعیت restricted بود، از فیلد is_member استفاده کن
     if ($status === 'restricted') {
         return (bool)$isMemberField;
     }
@@ -120,15 +118,11 @@ function checkUserForceJoin($userId, bool $reset = false): array {
     $missing = [];
     foreach ($assigned as $ch) {
         $result = checkSingleChannelMembership($ch, $userId);
-
         if ($result === null) {
-            // ❌ خطا در بررسی → Fail-Closed: کانال را به‌عنوان "عضو نشده" حساب کن
-            error_log('[ForceJoin] API error for channel=' . $ch
-                . ' user=' . $userId . ' — treating as NOT-MEMBER (fail-closed)');
-            $missing[] = $ch;
+            error_log('[ForceJoin] Skipping channel=' . $ch . ' for user=' . $userId . ' due to API error');
+            $missing[] = $ch; // Fail-Closed
             continue;
         }
-
         if ($result === false) {
             $missing[] = $ch;
         }
@@ -138,9 +132,11 @@ function checkUserForceJoin($userId, bool $reset = false): array {
         'missing' => $missing,
     ];
 }
+
+// این بخش همچنان از Inline Keyboard استفاده می‌کند چون شامل لینک (URL) است
 function sendForceJoinPrompt($chatId, array $missingChannels): void {
     $msg = "⚠️ عضویت اجباری\n\n"
-         . "برای استفاده از امکانات ربات آنفالویاب، ابتدا در کانال‌های زیر عضو شوید و سپس دکمه‌ی «عضو شدم» را بزنید.\n\n";
+         . "برای استفاده از امکانات ربات، ابتدا در کانال‌های زیر عضو شوید و سپس دکمه‌ی «عضو شدم» را بزنید.\n\n";
     $inlineKeyboard = [];
 
     foreach ($missingChannels as $index => $ch) {
@@ -161,28 +157,19 @@ function sendForceJoinPrompt($chatId, array $missingChannels): void {
     sendMessageWithKeyboard($chatId, $msg, ['inline_keyboard' => $inlineKeyboard]);
 }
 
+// 🔄 تغییر یافته: استفاده از Reply Keyboard به جای Inline Keyboard
 function sendStartMenu($chatId): void {
     $text = "👋 به ربات آنفالویاب خوش آمدید!\n\n"
           . "آنفالویاب به شما کمک می‌کند به صورت لحظه‌ای بفهمید چه اعضایی از کانال شما خارج می‌شوند.\n\n"
-          . "📌 از دکمه‌های زیر استفاده کنید:";
+          . "📌 از دکمه‌های زیر (در پایین صفحه) استفاده کنید:";
 
     $keyboard = [
-        'inline_keyboard' => [
-            [
-                ['text' => '➕ اتصال کانال جدید', 'callback_data' => 'menu_connect'],
-                ['text' => '📋 کانال‌های من', 'callback_data' => 'menu_mylist']
-            ],
-            [
-                ['text' => '📖 راهنمای استفاده', 'callback_data' => 'menu_help']
-            ],
-            [
-                ['text' => '💝 حمایت مالی', 'callback_data' => 'menu_donate'],
-                ['text' => '🌟 اسپانسر ما', 'callback_data' => 'menu_sponsor']
-            ],
-            [
-                ['text' => '🐞 گزارش باگ یا مشکل', 'callback_data' => 'menu_bug']
-            ]
-        ]
+        'keyboard' => [
+            [['text' => '➕ اتصال کانال جدید'], ['text' => '📋 کانال‌های من']],
+            [['text' => '📖 راهنمای استفاده'], ['text' => '💝 حمایت مالی']],
+            [['text' => '🌟 اسپانسر ما'], ['text' => '🐞 گزارش باگ']]
+        ],
+        'resize_keyboard' => true
     ];
 
     sendMessageWithKeyboard($chatId, $text, $keyboard);
@@ -192,12 +179,10 @@ function getHelpText(): string {
     return "📖 راهنمای استفاده از ربات آنفالویاب\n"
          . "━━━━━━━━━━━━━━━━━━\n\n"
          . "این ربات به شما کمک می‌کند بفهمید چه اعضایی از کانال شما خارج می‌شوند.\n\n"
-
          . "━━━━━━━━━━━━━━━━━━\n"
          . "⚙️ مرحله ۱: ادمین کردن ربات\n\n"
          . "ابتدا ربات آنفالویاب را در کانال خود ادمین کنید با دسترسی مدیریت اعضا.\n"
          . "بدون این دسترسی، ربات نمی‌تواند خروج اعضا را تشخیص دهد.\n\n"
-
          . "━━━━━━━━━━━━━━━━━━\n"
          . "🔗 مرحله ۲: اتصال کانال به ربات\n\n"
          . "برای اتصال کانال، دستور زیر را در همین چت ارسال کنید.\n"
@@ -211,15 +196,6 @@ function getHelpText(): string {
          . "/add @mynews\n\n"
          . "اگر آیدی عددی کانال شما منفی است، همان عدد را وارد کنید:\n\n"
          . "/add -1001234567890\n\n"
-
-         . "━━━━━━━━━━━━━━━━━━\n"
-         . "⚠️ نکته بسیار مهم\n\n"
-         . "دستور نمونه را عیناً و بدون تغییر نفرستید. بعد از کلمه add باید نام واقعی کانال خود را بنویسید.\n\n"
-         . "اشتباه (این را نفرستید):\n\n"
-         . "/add نام یا آیدی کانال شما\n\n"
-         . "درست (اگر آیدی کانال شما mynews است):\n\n"
-         . "/add mynews\n\n"
-
          . "━━━━━━━━━━━━━━━━━━\n"
          . "🛠 دستورات کاربردی\n\n"
          . "مشاهده لیست کانال‌های متصل شما:\n\n"
@@ -240,7 +216,6 @@ function getAdminHelpText(): string {
     return "👑 پنل مدیریت ربات آنفالویاب (مخصوص مالک)\n"
          . "━━━━━━━━━━━━━━━━━━\n\n"
          . "برای امنیت بیشتر، این پنل را فقط در چت خصوصی با ربات باز کنید.\n\n"
-
          . "📊 دستورات مشاهده\n\n"
          . "لیست کامل تمام کانال‌های ثبت‌شده در ربات:\n\n"
          . "/zk9xch\n\n"
@@ -249,7 +224,6 @@ function getAdminHelpText(): string {
          . "دیباگ سیستم عضویت اجباری (بدون آیدی برای وضعیت کانال‌ها، با آیدی برای تست کاربر خاص):\n\n"
          . "/zk9xst\n\n"
          . "/zk9xst 123456789\n\n"
-
          . "━━━━━━━━━━━━━━━━━━\n"
          . "⚙️ دستورات تنظیمی\n\n"
          . "افزودن کانال به استخر عضویت اجباری:\n\n"
@@ -260,7 +234,6 @@ function getAdminHelpText(): string {
          . "/zk9xsp متن جدید اسپانسر\n\n"
          . "تغییر متن دکمه‌ی حمایت مالی:\n\n"
          . "/zk9xdn متن جدید حمایت مالی\n\n"
-
          . "━━━━━━━━━━━━━━━━━━\n"
          . "⚠️ توصیه\n\n"
          . "این دستورات را در اختیار هیچ‌کس قرار ندهید.";
@@ -357,7 +330,7 @@ function handleMyList($chatId, $userId): void {
     $channels = getOwnerChannels($userId);
     if (empty($channels)) {
         sendPlainText($chatId, "📭 شما هنوز هیچ کانالی ثبت نکرده‌اید.\n\n"
-            . "برای اتصال کانال، ابتدا ربات را ادمین کنید و سپس این دستور را بفرستید:\n\n"
+            . "برای اتصال کانال، ابتدا ربات را ادمین کنید و سپس دستور زیر را بفرستید:\n\n"
             . "/add نام کانال شما");
         return;
     }
@@ -464,6 +437,7 @@ function handleCallbackQuery(array $cb): void {
         return;
     }
 
+    // پاسخ به منوهای قدیمی (Inline) برای سازگاری با پیام‌های قبلی
     if ($data !== 'menu_bug') {
         $check = checkUserForceJoin($userId, false);
         if (!$check['ok']) {
@@ -520,6 +494,56 @@ function handleTextMessage(array $message): void {
         return;
     }
 
+    // 🔄 مدیریت دکمه‌های جدید Reply Keyboard
+    $replyButtons = [
+        '➕ اتصال کانال جدید',
+        '📋 کانال‌های من',
+        '📖 راهنمای استفاده',
+        '💝 حمایت مالی',
+        '🌟 اسپانسر ما',
+        '🐞 گزارش باگ'
+    ];
+
+    if (in_array($text, $replyButtons, true)) {
+        $forceCheck = checkUserForceJoin($userId, false);
+        if (!$forceCheck['ok']) {
+            sendForceJoinPrompt($chatId, $forceCheck['missing']);
+            return;
+        }
+
+        switch ($text) {
+            case '➕ اتصال کانال جدید':
+                sendPlainText($chatId, "➕ برای اتصال کانال، ابتدا ربات آنفالویاب را در کانال خود ادمین کنید.\n\n"
+                    . "سپس دستور زیر را بفرستید و بعد از add، نام واقعی کانال خود را بنویسید:\n\n"
+                    . "/add mynews\n\n"
+                    . "در این نمونه، mynews نام کانال است. شما باید نام کانال خود را جایگزین کنید.");
+                break;
+            case '📋 کانال‌های من':
+                handleMyList($chatId, $userId);
+                break;
+            case '📖 راهنمای استفاده':
+                sendPlainText($chatId, getHelpText());
+                break;
+            case '💝 حمایت مالی':
+                sendPlainText($chatId, "💝 حمایت مالی از ربات آنفالویاب:\n\n" . getDonateText());
+                break;
+            case '🌟 اسپانسر ما':
+                sendPlainText($chatId, "🌟 اسپانسر ربات آنفالویاب:\n\n" . getSponsorText());
+                break;
+            case '🐞 گزارش باگ':
+                sendPlainText($chatId, "🐞 گزارش باگ یا مشکل\n\n"
+                    . "اگر در استفاده از ربات به مشکلی برخوردید یا باگی دیدید، لطفاً آن را برای ما ارسال کنید.\n\n"
+                    . "روش ارسال:\n"
+                    . "دستور bug را نوشته، سپس یک فاصله و بعد متن مشکل خود را بنویسید.\n\n"
+                    . "نمونه:\n\n"
+                    . "/bug ربات گزارش خروج اعضا را ارسال نمی‌کند\n\n"
+                    . "پیام شما مستقیماً برای مدیریت ربات ارسال می‌شود.");
+                break;
+        }
+        return;
+    }
+
+    // مدیریت دستورات متنی (با اسلش)
     [$cmd, $arg] = parseCommand($text);
     if ($cmd === null) {
         return;
