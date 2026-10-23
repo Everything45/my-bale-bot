@@ -2,11 +2,6 @@
 // src/redis_db.php
 declare(strict_types=1);
 
-/**
- * ارسال یک دستور Redis به Upstash REST API با فرمت JSON.
- * استفاده از POST با بدنه‌ی JSON از محدودیت طول URL و مشکلات
- * URL-encode شدن JSON های طولانی جلوگیری می‌کند.
- */
 function redisExec(array $command): ?array {
     if (REDIS_URL === '' || REDIS_TOKEN === '') {
         error_log('[Redis] REDIS_URL or REDIS_TOKEN is empty');
@@ -62,7 +57,6 @@ function redisGet(string $key): ?string {
     if ($res === null) {
         return null;
     }
-    // اگر Upstash مقدار JSON را از قبل decode کرده باشد، دوباره به رشته تبدیل می‌کنیم
     if (is_array($res)) {
         return json_encode($res, JSON_UNESCAPED_UNICODE);
     }
@@ -77,11 +71,6 @@ function redisHSet(string $key, string $field, string $value): bool {
     return redisExec(['HSET', $key, $field, $value]) !== null;
 }
 
-/**
- * Upstash ممکن است HGETALL را به صورت آبجکت (associative) یا آرایه‌ی
- * تخت (flat) برگرداند. همچنین مقادیر فیلدها ممکن است از قبل decode
- * شده باشند؛ این تابع هر دو حالت را مدیریت می‌کند.
- */
 function redisHGetAll(string $key): array {
     $result = redisResult(redisExec(['HGETALL', $key]));
     if (!is_array($result) || empty($result)) {
@@ -90,7 +79,7 @@ function redisHGetAll(string $key): array {
     $keys = array_keys($result);
     $isFlat = $keys === range(0, count($result) - 1);
     if (!$isFlat) {
-        return $result; // از قبل associative
+        return $result;
     }
     $pairs = [];
     $count = count($result);
@@ -127,13 +116,18 @@ function redisSMembers(string $key): array {
     return is_array($res) ? array_values($res) : [];
 }
 
-/* ─────────────────────── توابع دامنه ─────────────────────── */
+/* ───────────────── ذخیره‌سازی کانال‌ها (مقاوم) ───────────────── */
 
+/**
+ * ذخیره در چند مسیر:
+ *  1) channel_owner:{id}  → GET/SET  (تست‌شده)
+ *  2) channel_info:{id}   → GET/SET  (تست‌شده)
+ *  3) all_channels_set    → SADD     (تست‌شده)
+ *  4) all_channels_map    → HSET     (مسیر سازگاری/فال‌بک)
+ */
 function setChannelOwner($channelId, $ownerId, string $title = '', string $username = ''): void {
     $channelIdStr = (string)$channelId;
     $ownerIdStr = (string)$ownerId;
-
-    redisSet("channel_owner:{$channelIdStr}", $ownerIdStr);
 
     $info = json_encode([
         'owner_id' => $ownerIdStr,
@@ -142,8 +136,13 @@ function setChannelOwner($channelId, $ownerId, string $title = '', string $usern
         'updated_at' => date('Y-m-d H:i:s'),
     ], JSON_UNESCAPED_UNICODE);
 
+    redisSet("channel_owner:{$channelIdStr}", $ownerIdStr);
+    redisSet("channel_info:{$channelIdStr}", $info);
+    redisSAdd('all_channels_set', $channelIdStr);
+
+    // مسیر قدیمی؛ اگر شکست بخورد فقط لاگ می‌شود
     if (!redisHSet('all_channels_map', $channelIdStr, $info)) {
-        error_log('[Channel] Failed to store channel info for ' . $channelIdStr);
+        error_log('[Channel] HSET failed (fallback paths still active) for ' . $channelIdStr);
     }
 }
 
@@ -152,21 +151,46 @@ function getChannelOwner($channelId): ?string {
 }
 
 function getAllChannelsMap(): array {
-    $raw = redisHGetAll('all_channels_map');
     $result = [];
+
+    // مسیر اصلی: SET + GET
+    $ids = redisSMembers('all_channels_set');
+    foreach ($ids as $chId) {
+        $chIdStr = (string)$chId;
+        $infoStr = redisGet("channel_info:{$chIdStr}");
+        if ($infoStr === null) {
+            continue;
+        }
+        $decoded = json_decode($infoStr, true);
+        if (is_array($decoded)) {
+            $result[$chIdStr] = $decoded;
+        }
+    }
+
+    // مسیر سازگاری: hash قدیمی
+    $raw = redisHGetAll('all_channels_map');
     foreach ($raw as $chId => $infoVal) {
-        // Upstash ممکن است مقدار JSON را از قبل به آرایه decode کرده باشد
+        $chIdStr = (string)$chId;
+        if (isset($result[$chIdStr])) {
+            continue;
+        }
         if (is_array($infoVal)) {
             $decoded = $infoVal;
         } else {
-            $decoded = json_decode((string)$infoVal, true);
+            $str = (string)$infoVal;
+            $decoded = json_decode($str, true);
+            if (!is_array($decoded)) {
+                // سازگاری با داده‌های URL-encoded قدیمی
+                $decoded = json_decode(urldecode($str), true);
+            }
         }
         if (is_array($decoded)) {
-            $result[(string)$chId] = $decoded;
+            $result[$chIdStr] = $decoded;
         } else {
-            error_log('[Channel] Unparseable info for ch=' . $chId);
+            error_log('[Channel] Unparseable info for ch=' . $chIdStr);
         }
     }
+
     return $result;
 }
 
@@ -177,8 +201,10 @@ function removeChannel($channelId): bool {
         return false;
     }
     redisDel("channel_owner:{$channelIdStr}");
+    redisDel("channel_info:{$channelIdStr}");
     redisDel("leave_history:{$channelIdStr}");
     redisHDel('all_channels_map', $channelIdStr);
+    redisSRem('all_channels_set', $channelIdStr);
     return true;
 }
 
@@ -193,6 +219,8 @@ function getOwnerChannels($ownerId): array {
     }
     return $result;
 }
+
+/* ───────────────── بقیه (بدون تغییر) ───────────────── */
 
 function saveLeaveHistory($channelId, array $record): void {
     redisLPushTrim(
