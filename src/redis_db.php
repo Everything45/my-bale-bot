@@ -303,8 +303,14 @@ function updateKhatmTotal(string $id, int $amount): int {
     return redisIncrBy("khatm_total:{$id}", $amount);
 }
 
-function addKhatmContribution(string $khatmId, string $userId, int $amount): void {
-    if ($amount === 0) return;
-    redisIncrBy("khatm_contrib:{$khatmId}:{$userId}", $amount);
+function getKhatmUserTotal(string $khatmId, string $userId): int {
+    return (int)(redisGet("khatm_contrib:{$khatmId}:{$userId}") ?? 0);
+}
+
+/** مشارکت را ثبت می‌کند و مجموع مشارکت همین کاربر را برمی‌گرداند */
+function addKhatmContribution(string $khatmId, string $userId, int $amount): int {
+    if ($amount === 0) return getKhatmUserTotal($khatmId, $userId);
+    $mine = redisIncrBy("khatm_contrib:{$khatmId}:{$userId}", $amount);
     updateKhatmTotal($khatmId, $amount);
+    return $mine;
 }

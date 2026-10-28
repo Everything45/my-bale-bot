@@ -78,6 +78,47 @@ function sendMessageWithKeyboard($chatId, string $text, ?array $replyMarkup = nu
     }
 }
 
+/**
+ * اگر $messageId داده شود پیام را ویرایش می‌کند، وگرنه (یا اگر ویرایش ممکن نبود) پیام جدید می‌فرستد.
+ * شناسه‌ی پیام نهایی را برمی‌گرداند. بدون parse_mode (متن ساده).
+ */
+function editOrSendMessage($chatId, ?int $messageId, string $text, ?array $replyMarkup = null): ?int {
+    if (!$chatId) {
+        return null;
+    }
+    if ($messageId !== null && $messageId > 0) {
+        $payload = ['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $text];
+        if ($replyMarkup !== null) {
+            $payload['reply_markup'] = $replyMarkup;
+        }
+        $res = apiPost('editMessageText', $payload);
+        if ($res !== null && !empty($res['ok'])) {
+            return $messageId;
+        }
+        // محتوای یکسان = تغییری لازم نیست؛ پیام جدید نفرست
+        $desc = strtolower((string)($res['description'] ?? ''));
+        if (strpos($desc, 'not modified') !== false) {
+            return $messageId;
+        }
+    }
+    $payload = ['chat_id' => $chatId, 'text' => $text];
+    if ($replyMarkup !== null) {
+        $payload['reply_markup'] = $replyMarkup;
+    }
+    $res = apiPost('sendMessage', $payload);
+    if ($res !== null && !empty($res['ok']) && isset($res['result']['message_id'])) {
+        return (int)$res['result']['message_id'];
+    }
+    return null;
+}
+
+function deleteMessageSafe($chatId, $messageId): void {
+    if (!$chatId || !$messageId) {
+        return;
+    }
+    apiPost('deleteMessage', ['chat_id' => $chatId, 'message_id' => (int)$messageId]);
+}
+
 function answerCallbackQuery($callbackId, string $text = '', bool $showAlert = false): void {
     if (!$callbackId) {
         return;
