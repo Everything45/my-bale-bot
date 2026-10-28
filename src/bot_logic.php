@@ -857,7 +857,7 @@ function handleTextMessage(array $message): void {
         }
 
         switch ($replyButtonMap[$text]) {
-            case 'connect': sendMessageWithKeyboard($chatId, "➕ اتصال کانال\n\n1. ربات رو تو کانال ادمین کنید\n2. این رو بفرستید:\n/add mynews"); break;
+            case 'connect': sendMessageWithKeyboard($chatId, "➕ اتصال کانال\n\n1. ربات رو تو کانال ادمین کنید\n2. این mynews رو با آیدی کانالت جاگزاری کن بفرستید:\n/add mynews"); break;
             case 'mylist': handleMyList($chatId, $userId); break;
             case 'help': sendMessageWithKeyboard($chatId, getHelpText()); break;
             case 'sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
