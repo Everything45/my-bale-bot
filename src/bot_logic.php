@@ -329,7 +329,7 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
     $khatm = getKhatm($khatmId);
     $b = $khatm['buttons'];
 
-    // ⬇️ کیبورد دقیقاً مشابه تصویر (عمودی)
+    // ساخت کیبورد شیشه‌ای
     $inlineKeyboard = [
         [['text' => (string)$b[0], 'callback_data' => "khatm_count:{$khatmId}:{$b[0]}"]],
         [['text' => (string)$b[1], 'callback_data' => "khatm_count:{$khatmId}:{$b[1]}"]],
@@ -344,27 +344,46 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
     $caption = "عنوان ختم : " . $khatm['title'] . "\n"
              . "توضیحات ختم : " . $khatm['desc'];
 
-    $payload = [
-        'chat_id' => $chId,
-        'parse_mode' => 'Markdown',
-        'reply_markup' => $inlineKeyboard,
-    ];
-
-    $res = null;
     if (!empty($khatm['image'])) {
-        $payload['photo'] = $khatm['image'];
-        $payload['caption'] = $caption;
-        $res = apiPost('sendPhoto', $payload);
+        // 1. ارسال عکس بدون دکمه (چون بله دکمه رو تو sendPhoto نشون نمیده)
+        $res = apiPost('sendPhoto', [
+            'chat_id' => $chId,
+            'photo' => $khatm['image'],
+            'caption' => $caption
+        ]);
         
-        // اگر ارسال عکس با خطا مواجه شد، متن را ارسال کن
-        if ($res === null || empty($res['ok'])) {
-            unset($payload['photo'], $payload['caption']);
-            $payload['text'] = $caption;
-            apiPost('sendMessage', $payload);
+        // 2. اگر عکس ارسال شد، با استفاده از editMessageReplyMarkup دکمه‌ها رو بهش می‌چسبونیم
+        if ($res !== null && !empty($res['ok']) && isset($res['result']['message_id'])) {
+            $msgId = $res['result']['message_id'];
+            $editRes = apiPost('editMessageReplyMarkup', [
+                'chat_id' => $chId,
+                'message_id' => $msgId,
+                'reply_markup' => $inlineKeyboard
+            ]);
+            
+            // اگر ویرایش دکمه‌ها خطا داد، پیام متنی با دکمه می‌فرستیم
+            if ($editRes === null || empty($editRes['ok'])) {
+                apiPost('sendMessage', [
+                    'chat_id' => $chId,
+                    'text' => "برای شمارش روی دکمه‌های زیر بزنید:",
+                    'reply_markup' => $inlineKeyboard
+                ]);
+            }
+        } else {
+            // اگر کلاً عکس ارسال نشد، متن با دکمه می‌فرستیم
+            apiPost('sendMessage', [
+                'chat_id' => $chId,
+                'text' => $caption,
+                'reply_markup' => $inlineKeyboard
+            ]);
         }
     } else {
-        $payload['text'] = $caption;
-        apiPost('sendMessage', $payload);
+        // اگر عکسی نبود، پیام متنی با دکمه می‌فرستیم
+        apiPost('sendMessage', [
+            'chat_id' => $chId,
+            'text' => $caption,
+            'reply_markup' => $inlineKeyboard
+        ]);
     }
 
     sendPlainText($chatId, "✅ ختم با موفقیت در کانال ارسال شد!\n\nاعضا می‌توانند با کلیک روی دکمه‌های شیشه‌ای داخل کانال، در ختم شرکت کنند و آمار به صورت زنده آپدیت می‌شود.");
@@ -378,7 +397,6 @@ function updateChannelKhatmMessage($chatId, $messageId, $khatmId) {
     $remain = max(0, $khatm['target'] - $total);
     $b = $khatm['buttons'];
 
-    // ساخت مجدد کیبورد برای آپدیت اعداد
     $inlineKeyboard = [
         [['text' => (string)$b[0], 'callback_data' => "khatm_count:{$khatmId}:{$b[0]}"]],
         [['text' => (string)$b[1], 'callback_data' => "khatm_count:{$khatmId}:{$b[1]}"]],
@@ -393,28 +411,27 @@ function updateChannelKhatmMessage($chatId, $messageId, $khatmId) {
     $caption = "عنوان ختم : " . $khatm['title'] . "\n"
              . "توضیحات ختم : " . $khatm['desc'];
 
-    $payload = [
-        'chat_id' => $chatId,
-        'message_id' => $messageId,
-        'reply_markup' => $inlineKeyboard
-    ];
-
     if (!empty($khatm['image'])) {
-        $payload['caption'] = $caption;
-        $payload['parse_mode'] = 'Markdown';
-        $res = apiPost('editMessageCaption', $payload);
-        if ($res === null || empty($res['ok'])) {
-            unset($payload['parse_mode']);
-            apiPost('editMessageCaption', $payload);
-        }
+        // آپدیت کپشن عکس
+        apiPost('editMessageCaption', [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'caption' => $caption
+        ]);
+        // آپدیت دکمه‌ها (برای نمایش مجموع و مانده جدید)
+        apiPost('editMessageReplyMarkup', [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'reply_markup' => $inlineKeyboard
+        ]);
     } else {
-        $payload['text'] = $caption;
-        $payload['parse_mode'] = 'Markdown';
-        $res = apiPost('editMessageText', $payload);
-        if ($res === null || empty($res['ok'])) {
-            unset($payload['parse_mode']);
-            apiPost('editMessageText', $payload);
-        }
+        // آپدیت پیام متنی
+        apiPost('editMessageText', [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'text' => $caption,
+            'reply_markup' => $inlineKeyboard
+        ]);
     }
 }
 
@@ -430,7 +447,7 @@ function handleCallbackQuery(array $cb): void {
 
     if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
 
-    // ⬇️ پردازش دکمه‌های شمارش در کانال
+    // پردازش دکمه‌های شمارش در کانال
     if (strpos($data, 'khatm_count:') === 0) {
         $parts = explode(':', $data);
         if (count($parts) === 3) {
@@ -450,7 +467,6 @@ function handleCallbackQuery(array $cb): void {
         return;
     }
 
-    // دکمه‌های مجموع و مانده (فقط برای آپدیت الکی زده میشن)
     if ($data === 'khatm_refresh') {
         answerCallbackQuery($cbId);
         return;
@@ -458,7 +474,7 @@ function handleCallbackQuery(array $cb): void {
 
     if ($data === 'show_sponsor_channel') {
         $sponsorText = getSponsorText();
-        $sponsorText = mb_substr($sponsorText, 0, 200); // جلوگیری از خطای طولانی بودن متن
+        $sponsorText = mb_substr($sponsorText, 0, 200); 
         answerCallbackQuery($cbId, $sponsorText, true);
         return;
     }
@@ -573,10 +589,7 @@ function handleTextMessage(array $message): void {
     }
 
     switch ($cmd) {
-        case 'start':
-            sendStartMenu($chatId);
-            break;
-
+        case 'start': sendStartMenu($chatId); break;
         case 'help': sendPlainText($chatId, getHelpText()); break;
         case 'status':
             $msg = "🤖 ربات آنفالویاب: آنلاین\n🕒 " . date('Y-m-d H:i:s');
