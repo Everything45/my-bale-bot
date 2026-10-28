@@ -116,15 +116,8 @@ function redisSMembers(string $key): array {
     return is_array($res) ? array_values($res) : [];
 }
 
-/* ───────────────── ذخیره‌سازی کانال‌ها (مقاوم) ───────────────── */
+/* ───────────────── ذخیره‌سازی کانال‌ها ───────────────── */
 
-/**
- * ذخیره در چند مسیر:
- *  1) channel_owner:{id}  → GET/SET  (تست‌شده)
- *  2) channel_info:{id}   → GET/SET  (تست‌شده)
- *  3) all_channels_set    → SADD     (تست‌شده)
- *  4) all_channels_map    → HSET     (مسیر سازگاری/فال‌بک)
- */
 function setChannelOwner($channelId, $ownerId, string $title = '', string $username = ''): void {
     $channelIdStr = (string)$channelId;
     $ownerIdStr = (string)$ownerId;
@@ -140,7 +133,6 @@ function setChannelOwner($channelId, $ownerId, string $title = '', string $usern
     redisSet("channel_info:{$channelIdStr}", $info);
     redisSAdd('all_channels_set', $channelIdStr);
 
-    // مسیر قدیمی؛ اگر شکست بخورد فقط لاگ می‌شود
     if (!redisHSet('all_channels_map', $channelIdStr, $info)) {
         error_log('[Channel] HSET failed (fallback paths still active) for ' . $channelIdStr);
     }
@@ -153,7 +145,6 @@ function getChannelOwner($channelId): ?string {
 function getAllChannelsMap(): array {
     $result = [];
 
-    // مسیر اصلی: SET + GET
     $ids = redisSMembers('all_channels_set');
     foreach ($ids as $chId) {
         $chIdStr = (string)$chId;
@@ -167,7 +158,6 @@ function getAllChannelsMap(): array {
         }
     }
 
-    // مسیر سازگاری: hash قدیمی
     $raw = redisHGetAll('all_channels_map');
     foreach ($raw as $chId => $infoVal) {
         $chIdStr = (string)$chId;
@@ -180,7 +170,6 @@ function getAllChannelsMap(): array {
             $str = (string)$infoVal;
             $decoded = json_decode($str, true);
             if (!is_array($decoded)) {
-                // سازگاری با داده‌های URL-encoded قدیمی
                 $decoded = json_decode(urldecode($str), true);
             }
         }
@@ -220,7 +209,7 @@ function getOwnerChannels($ownerId): array {
     return $result;
 }
 
-/* ───────────────── بقیه (بدون تغییر) ───────────────── */
+/* ───────────────── تاریخچه خروج ───────────────── */
 
 function saveLeaveHistory($channelId, array $record): void {
     redisLPushTrim(
@@ -245,6 +234,8 @@ function getLeaveHistory($channelId): array {
     }
     return $result;
 }
+
+/* ───────────────── استخر عضویت اجباری ───────────────── */
 
 function getForceChannelsPool(): array {
     return redisSMembers('force_channels_pool');
@@ -311,6 +302,8 @@ function assignRandomForceChannels($userId, bool $reset = false): array {
     return $selected;
 }
 
+/* ───────────────── اسپانسر ───────────────── */
+
 function setSponsorText(string $text): void {
     redisSet('bot_sponsor_text', $text);
 }
@@ -319,16 +312,7 @@ function getSponsorText(): string {
     $text = redisGet('bot_sponsor_text');
     return ($text !== null && trim($text) !== '')
         ? $text
-        : "🌟 هنوز اسپانسری ثبت نشده است.\nجهت رزرو اسپانسری با مدیریت ربات در ارتباط باشید.";
+        : "🌟 هنوز اسپانسری ثبت نشده.\nبرای رزرو با مدیر ربات در تماس باشید.";
 }
 
-function setDonateText(string $text): void {
-    redisSet('bot_donate_text', $text);
-}
-
-function getDonateText(): string {
-    $text = redisGet('bot_donate_text');
-    return ($text !== null && trim($text) !== '')
-        ? $text
-        : "💝 در حال حاضر اطلاعات حمایت مالی ثبت نشده است.";
-}
+/* ⛔ setDonateText و getDonateText حذف شدند (فاز ۱) */

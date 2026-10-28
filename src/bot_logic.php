@@ -43,6 +43,8 @@ function parseCommand(string $text): array {
     return [strtolower($m[1]), isset($m[2]) ? trim($m[2]) : ''];
 }
 
+/* ───────────────── عضویت اجباری ───────────────── */
+
 function checkBotIsAdminInChannel(string $channelRef): array {
     $channelRef = trim($channelRef);
     if ($channelRef === '') {
@@ -54,7 +56,7 @@ function checkBotIsAdminInChannel(string $channelRef): array {
     }
     $chatRes = apiPost('getChat', ['chat_id' => $ref]);
     if ($chatRes === null || empty($chatRes['ok'])) {
-        return ['ok' => false, 'error' => 'کانال پیدا نشد یا ربات به آن دسترسی ندارد.'];
+        return ['ok' => false, 'error' => 'کانال پیدا نشد یا ربات دسترسی ندارد.'];
     }
     $realId = (string)$chatRes['result']['id'];
     $title = $chatRes['result']['title'] ?? 'بدون نام';
@@ -62,14 +64,14 @@ function checkBotIsAdminInChannel(string $channelRef): array {
 
     $botId = getBotId();
     if ($botId === null) {
-        return ['ok' => false, 'error' => 'شناسایی هویت ربات ممکن نشد.'];
+        return ['ok' => false, 'error' => 'شناسایی ربات ناموفق بود.'];
     }
     $memberRes = apiPost('getChatMember', [
         'chat_id' => $realId,
         'user_id' => $botId,
     ]);
     if ($memberRes === null || empty($memberRes['ok'])) {
-        return ['ok' => false, 'error' => 'بررسی وضعیت ربات در کانال ممکن نشد.'];
+        return ['ok' => false, 'error' => 'بررسی وضعیت ربات در کانال ناموفق بود.'];
     }
     $status = $memberRes['result']['status'] ?? '';
     if (!in_array($status, ['administrator', 'creator'], true)) {
@@ -120,7 +122,7 @@ function checkUserForceJoin($userId, bool $reset = false): array {
         $result = checkSingleChannelMembership($ch, $userId);
         if ($result === null) {
             error_log('[ForceJoin] Skipping channel=' . $ch . ' for user=' . $userId . ' due to API error');
-            $missing[] = $ch; // Fail-Closed
+            $missing[] = $ch;
             continue;
         }
         if ($result === false) {
@@ -133,10 +135,9 @@ function checkUserForceJoin($userId, bool $reset = false): array {
     ];
 }
 
-// این بخش همچنان از Inline Keyboard استفاده می‌کند چون شامل لینک (URL) است
 function sendForceJoinPrompt($chatId, array $missingChannels): void {
     $msg = "⚠️ عضویت اجباری\n\n"
-         . "برای استفاده از امکانات ربات، ابتدا در کانال‌های زیر عضو شوید و سپس دکمه‌ی «عضو شدم» را بزنید.\n\n";
+         . "برای استفاده از ربات، اول تو کانال‌های زیر عضو شوید و «عضو شدم» رو بزنید.\n\n";
     $inlineKeyboard = [];
 
     foreach ($missingChannels as $index => $ch) {
@@ -157,17 +158,18 @@ function sendForceJoinPrompt($chatId, array $missingChannels): void {
     sendMessageWithKeyboard($chatId, $msg, ['inline_keyboard' => $inlineKeyboard]);
 }
 
-// 🔄 تغییر یافته: استفاده از Reply Keyboard به جای Inline Keyboard
+/* ───────────────── منو و متن‌ها ───────────────── */
+
 function sendStartMenu($chatId): void {
     $text = "👋 به ربات آنفالویاب خوش آمدید!\n\n"
-          . "آنفالویاب به شما کمک می‌کند به صورت لحظه‌ای بفهمید چه اعضایی از کانال شما خارج می‌شوند.\n\n"
-          . "📌 از دکمه‌های زیر (در پایین صفحه) استفاده کنید:";
+          . "لحظه‌ای می‌فهمید چه اعضایی از کانالتون خارج می‌شن.\n\n"
+          . "از دکمه‌های پایین استفاده کنید 👇";
 
     $keyboard = [
         'keyboard' => [
-            [['text' => '➕ اتصال کانال جدید'], ['text' => '📋 کانال‌های من']],
-            [['text' => '📖 راهنمای استفاده'], ['text' => '💝 حمایت مالی']],
-            [['text' => '🌟 اسپانسر ما'], ['text' => '🐞 گزارش باگ']]
+            [['text' => '➕ اتصال کانال'], ['text' => '📋 کانال‌های من']],
+            [['text' => '📖 راهنما'], ['text' => '🌟 اسپانسر']],
+            [['text' => '🐞 گزارش باگ']]
         ],
         'resize_keyboard' => true
     ];
@@ -176,68 +178,41 @@ function sendStartMenu($chatId): void {
 }
 
 function getHelpText(): string {
-    return "📖 راهنمای استفاده از ربات آنفالویاب\n"
+    return "📖 راهنمای استفاده\n"
          . "━━━━━━━━━━━━━━━━━━\n\n"
-         . "این ربات به شما کمک می‌کند بفهمید چه اعضایی از کانال شما خارج می‌شوند.\n\n"
-         . "━━━━━━━━━━━━━━━━━━\n"
-         . "⚙️ مرحله ۱: ادمین کردن ربات\n\n"
-         . "ابتدا ربات آنفالویاب را در کانال خود ادمین کنید با دسترسی مدیریت اعضا.\n"
-         . "بدون این دسترسی، ربات نمی‌تواند خروج اعضا را تشخیص دهد.\n\n"
-         . "━━━━━━━━━━━━━━━━━━\n"
-         . "🔗 مرحله ۲: اتصال کانال به ربات\n\n"
-         . "برای اتصال کانال، دستور زیر را در همین چت ارسال کنید.\n"
-         . "بلافاصله بعد از کلمه add یک فاصله بگذارید و سپس نام یا آیدی کانال خود را بنویسید.\n\n"
-         . "ساختار دستور:\n\n"
-         . "/add نام یا آیدی کانال شما\n\n"
-         . "نمونه‌های واقعی و درست:\n\n"
-         . "اگر آیدی کانال شما mynews است، دقیقاً این را بفرستید:\n\n"
-         . "/add mynews\n\n"
-         . "اگر آیدی کانال شما با علامت @ شروع می‌شود، این را بفرستید:\n\n"
-         . "/add @mynews\n\n"
-         . "اگر آیدی عددی کانال شما منفی است، همان عدد را وارد کنید:\n\n"
+         . "1️⃣ ربات رو تو کانالتون ادمین کنید (با دسترسی مدیریت اعضا)\n\n"
+         . "2️⃣ کانال رو وصل کنید:\n"
+         . "/add نام یا آیدی کانال\n\n"
+         . "مثال:\n"
+         . "/add mynews\n"
+         . "/add @mynews\n"
          . "/add -1001234567890\n\n"
          . "━━━━━━━━━━━━━━━━━━\n"
-         . "🛠 دستورات کاربردی\n\n"
-         . "مشاهده لیست کانال‌های متصل شما:\n\n"
-         . "/my\n\n"
-         . "بررسی وضعیت ربات:\n\n"
-         . "/status\n\n"
-         . "بازگشت به منوی اصلی:\n\n"
-         . "/start\n\n"
-         . "مشاهده تاریخچه آخرین خروج‌ها از یک کانال:\n\n"
-         . "/history mynews\n\n"
-         . "قطع اتصال کانال از ربات:\n\n"
-         . "/remove mynews\n\n"
-         . "گزارش باگ یا مشکل:\n\n"
-         . "/bug متن مشکل خود را اینجا بنویسید";
+         . "🛠 دستورات\n\n"
+         . "/my — لیست کانال‌ها\n"
+         . "/status — وضعیت ربات\n"
+         . "/history نام‌کانال — آخرین خروج‌ها\n"
+         . "/remove نام‌کانال — قطع اتصال\n"
+         . "/bug متن — گزارش مشکل\n"
+         . "/start — منوی اصلی";
 }
 
 function getAdminHelpText(): string {
-    return "👑 پنل مدیریت ربات آنفالویاب (مخصوص مالک)\n"
+    return "👑 پنل مدیریت (مخصوص مالک)\n"
          . "━━━━━━━━━━━━━━━━━━\n\n"
-         . "برای امنیت بیشتر، این پنل را فقط در چت خصوصی با ربات باز کنید.\n\n"
-         . "📊 دستورات مشاهده\n\n"
-         . "لیست کامل تمام کانال‌های ثبت‌شده در ربات:\n\n"
-         . "/zk9xch\n\n"
-         . "نمایش لیست کانال‌های موجود در استخر عضویت اجباری:\n\n"
-         . "/zk9xfl\n\n"
-         . "دیباگ سیستم عضویت اجباری (بدون آیدی برای وضعیت کانال‌ها، با آیدی برای تست کاربر خاص):\n\n"
-         . "/zk9xst\n\n"
-         . "/zk9xst 123456789\n\n"
+         . "📊 مشاهده\n"
+         . "/zk9xch (یا /channels) — کل کانال‌ها\n"
+         . "/zk9xfl (یا /forcelist) — استخر عضویت اجباری\n"
+         . "/zk9xst [آیدی] (یا /forcetest) — دیباگ\n\n"
+         . "⚙️ تنظیمات\n"
+         . "/zk9xfa کانال (یا /forceadd) — افزودن به استخر\n"
+         . "/zk9xfd کانال (یا /forcedel) — حذف از استخر\n"
+         . "/zk9xsp متن (یا /sponsor) — تنظیم اسپانسر\n\n"
          . "━━━━━━━━━━━━━━━━━━\n"
-         . "⚙️ دستورات تنظیمی\n\n"
-         . "افزودن کانال به استخر عضویت اجباری:\n\n"
-         . "/zk9xfa mychannel\n\n"
-         . "حذف کانال از استخر عضویت اجباری:\n\n"
-         . "/zk9xfd mychannel\n\n"
-         . "تغییر متن دکمه‌ی اسپانسر:\n\n"
-         . "/zk9xsp متن جدید اسپانسر\n\n"
-         . "تغییر متن دکمه‌ی حمایت مالی:\n\n"
-         . "/zk9xdn متن جدید حمایت مالی\n\n"
-         . "━━━━━━━━━━━━━━━━━━\n"
-         . "⚠️ توصیه\n\n"
-         . "این دستورات را در اختیار هیچ‌کس قرار ندهید.";
+         . "⚠️ این دستورات رو جایی منتشر نکنید.";
 }
+
+/* ───────────────── کانال‌ها ───────────────── */
 
 function resolveChannelId(string $target): ?string {
     $target = trim($target);
@@ -259,9 +234,7 @@ function resolveChannelId(string $target): ?string {
 
 function handleConnect($chatId, $userId, string $arg): void {
     if ($arg === '') {
-        sendPlainText($chatId, "❌ بعد از دستور add، نام یا آیدی کانال خود را وارد کنید.\n\n"
-            . "نمونه‌ی درست (اگر آیدی کانال شما mynews است):\n\n"
-            . "/add mynews");
+        sendPlainText($chatId, "❌ نام کانال رو بعد از دستور add بنویسید.\n\nمثال:\n/add mynews");
         return;
     }
 
@@ -272,11 +245,10 @@ function handleConnect($chatId, $userId, string $arg): void {
 
     $chatRes = apiPost('getChat', ['chat_id' => $target]);
     if ($chatRes === null || empty($chatRes['ok'])) {
-        sendPlainText($chatId, "❌ کانال پیدا نشد.\n\n"
-            . "مطمئن شوید:\n"
-            . "۱. ربات را در کانال ادمین کرده‌اید.\n"
-            . "۲. نام یا آیدی کانال را درست وارد کرده‌اید.\n"
-            . "۳. بعد از add یک فاصله و سپس نام کانال را نوشته‌اید.");
+        sendPlainText($chatId, "❌ کانال پیدا نشد.\n\nچک کنید:\n"
+            . "1. ربات تو کانال ادمین باشه\n"
+            . "2. نام کانال درست باشه\n"
+            . "3. بعد از add یک فاصله و نام کانال");
         return;
     }
 
@@ -287,7 +259,7 @@ function handleConnect($chatId, $userId, string $arg): void {
 
     $existingOwner = getChannelOwner($realChannelId);
     if ($existingOwner !== null && (string)$existingOwner !== (string)$userId && !isBotOwner($userId)) {
-        sendPlainText($chatId, "⛔ این کانال قبلاً توسط کاربر دیگری در ربات ثبت شده است.");
+        sendPlainText($chatId, "⛔ این کانال قبلاً توسط کاربر دیگری ثبت شده.");
         return;
     }
 
@@ -299,8 +271,7 @@ function handleConnect($chatId, $userId, string $arg): void {
         ]);
         $botStatus = $botMember['result']['status'] ?? '';
         if (!in_array($botStatus, ['administrator', 'creator'], true)) {
-            sendPlainText($chatId, "⚠️ ابتدا ربات آنفالویاب را در کانال خود ادمین کنید تا گزارش‌ها ارسال شوند.\n"
-                . "سپس دوباره دستور add را امتحان کنید.");
+            sendPlainText($chatId, "⚠️ اول ربات رو تو کانال ادمین کنید، بعد دوباره add رو بزنید.");
             return;
         }
     }
@@ -311,97 +282,93 @@ function handleConnect($chatId, $userId, string $arg): void {
     ]);
 
     if ($memberRes === null || empty($memberRes['ok'])) {
-        sendPlainText($chatId, "❌ ربات دسترسی بررسی اعضا را ندارد. لطفاً ربات را در کانال ادمین کنید.");
+        sendPlainText($chatId, "❌ ربات دسترسی بررسی اعضا نداره. لطفاً ادمینش کنید.");
         return;
     }
 
     $status = $memberRes['result']['status'] ?? '';
     if (!in_array($status, ['creator', 'administrator'], true) && !isBotOwner($userId)) {
-        sendPlainText($chatId, "⛔ شما در این کانال ادمین یا سازنده نیستید.");
+        sendPlainText($chatId, "⛔ شما تو این کانال ادمین یا سازنده نیستید.");
         return;
     }
 
     setChannelOwner($realChannelId, $userId, $title, $username);
-    sendPlainText($chatId, "✅ کانال " . $title . " با آیدی " . $realChannelId . " با موفقیت به حساب شما متصل شد.\n\n"
-        . "از این پس گزارش خروج اعضا برای شما ارسال می‌شود.");
+    sendPlainText($chatId, "✅ کانال «" . $title . "» متصل شد.\n\nاز الان گزارش خروج اعضا براتون میاد.");
 }
 
 function handleMyList($chatId, $userId): void {
     $channels = getOwnerChannels($userId);
     if (empty($channels)) {
-        sendPlainText($chatId, "📭 شما هنوز هیچ کانالی ثبت نکرده‌اید.\n\n"
-            . "برای اتصال کانال، ابتدا ربات را ادمین کنید و سپس دستور زیر را بفرستید:\n\n"
-            . "/add نام کانال شما");
+        sendPlainText($chatId, "📭 هنوز کانالی ثبت نکردید.\n\n"
+            . "برای اتصال:\n"
+            . "1. ربات رو ادمین کنید\n"
+            . "2. /add نام‌کانال رو بفرستید");
         return;
     }
 
-    $msg = "📋 لیست کانال‌های متصل شما:\n\n";
+    $msg = "📋 کانال‌های شما:\n\n";
     foreach ($channels as $chId => $info) {
         $title = $info['title'] ?: 'بدون نام';
         $un = $info['username'] ? " (" . $info['username'] . ")" : '';
         $msg .= "🔹 " . $title . $un . "\n"
               . "آیدی: " . $chId . "\n"
-              . "تاریخ ثبت: " . $info['updated_at'] . "\n\n";
+              . "ثبت: " . $info['updated_at'] . "\n\n";
     }
     sendPlainText($chatId, $msg);
 }
 
 function handleRemoveChannel($chatId, $userId, string $arg): void {
     if ($arg === '') {
-        sendPlainText($chatId, "❌ بعد از دستور remove، نام یا آیدی کانال را وارد کنید.\n\n"
-            . "نمونه‌ی درست:\n\n"
-            . "/remove mynews");
+        sendPlainText($chatId, "❌ نام کانال رو بعد از remove بنویسید.\n\nمثال:\n/remove mynews");
         return;
     }
 
     $realId = resolveChannelId($arg);
     if ($realId === null) {
-        sendPlainText($chatId, "❌ کانال پیدا نشد. لطفاً از آیدی عددی کانال استفاده کنید.");
+        sendPlainText($chatId, "❌ کانال پیدا نشد. از آیدی عددی استفاده کنید.");
         return;
     }
 
     $owner = getChannelOwner($realId);
     if ($owner === null) {
-        sendPlainText($chatId, "❌ این کانال در ربات ثبت نشده است.");
+        sendPlainText($chatId, "❌ این کانال تو ربات ثبت نشده.");
         return;
     }
 
     if ((string)$owner !== (string)$userId && !isBotOwner($userId)) {
-        sendPlainText($chatId, "⛔ شما مالک ثبت‌کننده‌ی این کانال نیستید.");
+        sendPlainText($chatId, "⛔ شما مالک این کانال نیستید.");
         return;
     }
 
     removeChannel($realId);
-    sendPlainText($chatId, "🗑 کانال با آیدی " . $realId . " با موفقیت حذف شد و دیگر گزارش‌های آن ارسال نمی‌شود.");
+    sendPlainText($chatId, "🗑 کانال حذف شد. دیگه گزارشی ارسال نمی‌شه.");
 }
 
 function handleHistory($chatId, $userId, string $arg): void {
     if ($arg === '') {
-        sendPlainText($chatId, "❌ بعد از دستور history، نام یا آیدی کانال را وارد کنید.\n\n"
-            . "نمونه‌ی درست:\n\n"
-            . "/history mynews");
+        sendPlainText($chatId, "❌ نام کانال رو بعد از history بنویسید.\n\nمثال:\n/history mynews");
         return;
     }
 
     $realId = resolveChannelId($arg);
     if ($realId === null) {
-        sendPlainText($chatId, "❌ کانال پیدا نشد. لطفاً از آیدی عددی کانال استفاده کنید.");
+        sendPlainText($chatId, "❌ کانال پیدا نشد.");
         return;
     }
 
     $owner = getChannelOwner($realId);
     if ($owner === null || ((string)$owner !== (string)$userId && !isBotOwner($userId))) {
-        sendPlainText($chatId, "⛔ شما به تاریخچه‌ی این کانال دسترسی ندارید یا کانال در ربات ثبت نشده است.");
+        sendPlainText($chatId, "⛔ دسترسی ندارید یا کانال ثبت نشده.");
         return;
     }
 
     $history = getLeaveHistory($realId);
     if (empty($history)) {
-        sendPlainText($chatId, "📭 هنوز هیچ خروجی برای این کانال ثبت نشده است.");
+        sendPlainText($chatId, "📭 هنوز خروجی ثبت نشده.");
         return;
     }
 
-    $msg = "📊 آخرین خروجی‌های کانال با آیدی " . $realId . ":\n\n";
+    $msg = "📊 آخرین خروج‌ها از «" . $realId . "»:\n\n";
     $slice = array_slice($history, 0, 15);
     foreach ($slice as $idx => $item) {
         $num = $idx + 1;
@@ -409,11 +376,13 @@ function handleHistory($chatId, $userId, string $arg): void {
         $uid = $item['user_id'] ?? '';
         $un = !empty($item['username']) ? "@" . $item['username'] : 'بدون یوزرنیم';
         $time = $item['time'] ?? '';
-        $msg .= $num . ". " . $name . " (آیدی: " . $uid . " | " . $un . ")\n"
-              . "زمان: " . $time . "\n\n";
+        $msg .= $num . ". " . $name . " (" . $uid . " | " . $un . ")\n"
+              . "🕒 " . $time . "\n\n";
     }
     sendPlainText($chatId, $msg);
 }
+
+/* ───────────────── Callback ───────────────── */
 
 function handleCallbackQuery(array $cb): void {
     $cbId = $cb['id'] ?? null;
@@ -429,19 +398,19 @@ function handleCallbackQuery(array $cb): void {
     if ($data === 'check_force_join') {
         $check = checkUserForceJoin($userId, false);
         if ($check['ok']) {
-            answerCallbackQuery($cbId, '✅ عضویت شما تایید شد.', false);
+            answerCallbackQuery($cbId, '✅ عضویت تایید شد.', false);
             sendStartMenu($chatId);
         } else {
-            answerCallbackQuery($cbId, '❌ هنوز در همه‌ی کانال‌ها عضو نشده‌اید.', true);
+            answerCallbackQuery($cbId, '❌ هنوز عضو همه‌ی کانال‌ها نشدید.', true);
         }
         return;
     }
 
-    // پاسخ به منوهای قدیمی (Inline) برای سازگاری با پیام‌های قبلی
+    // سازگاری با منوهای قدیمی (Inline)
     if ($data !== 'menu_bug') {
         $check = checkUserForceJoin($userId, false);
         if (!$check['ok']) {
-            answerCallbackQuery($cbId, '⚠️ ابتدا در کانال‌های معرفی شده عضو شوید.', true);
+            answerCallbackQuery($cbId, '⚠️ اول تو کانال‌های معرفی‌شده عضو شوید.', true);
             sendForceJoinPrompt($chatId, $check['missing']);
             return;
         }
@@ -451,10 +420,9 @@ function handleCallbackQuery(array $cb): void {
 
     switch ($data) {
         case 'menu_connect':
-            sendPlainText($chatId, "➕ برای اتصال کانال، ابتدا ربات آنفالویاب را در کانال خود ادمین کنید.\n\n"
-                . "سپس دستور زیر را بفرستید و بعد از add، نام واقعی کانال خود را بنویسید:\n\n"
-                . "/add mynews\n\n"
-                . "در این نمونه، mynews نام کانال است. شما باید نام کانال خود را جایگزین کنید.");
+            sendPlainText($chatId, "➕ اتصال کانال\n\n"
+                . "1. ربات رو تو کانال ادمین کنید\n"
+                . "2. این رو بفرستید:\n/add mynews");
             break;
         case 'menu_mylist':
             handleMyList($chatId, $userId);
@@ -462,23 +430,20 @@ function handleCallbackQuery(array $cb): void {
         case 'menu_help':
             sendPlainText($chatId, getHelpText());
             break;
-        case 'menu_donate':
-            sendPlainText($chatId, "💝 حمایت مالی از ربات آنفالویاب:\n\n" . getDonateText());
-            break;
         case 'menu_sponsor':
-            sendPlainText($chatId, "🌟 اسپانسر ربات آنفالویاب:\n\n" . getSponsorText());
+            sendPlainText($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText());
             break;
         case 'menu_bug':
-            sendPlainText($chatId, "🐞 گزارش باگ یا مشکل\n\n"
-                . "اگر در استفاده از ربات به مشکلی برخوردید یا باگی دیدید، لطفاً آن را برای ما ارسال کنید.\n\n"
-                . "روش ارسال:\n"
-                . "دستور bug را نوشته، سپس یک فاصله و بعد متن مشکل خود را بنویسید.\n\n"
-                . "نمونه:\n\n"
-                . "/bug ربات گزارش خروج اعضا را ارسال نمی‌کند\n\n"
-                . "پیام شما مستقیماً برای مدیریت ربات ارسال می‌شود.");
+            sendPlainText($chatId, "🐞 گزارش باگ\n\n"
+                . "مشکل رو این‌طوری بفرستید:\n\n"
+                . "/bug متن مشکل\n\n"
+                . "مستقیم برای مدیر ربات میاد.");
             break;
+        // ⛔ case 'menu_donate' حذف شد (فاز ۱)
     }
 }
+
+/* ───────────────── Router متن ───────────────── */
 
 function handleTextMessage(array $message): void {
     $chatId = $message['chat']['id'] ?? null;
@@ -494,56 +459,51 @@ function handleTextMessage(array $message): void {
         return;
     }
 
-    // 🔄 مدیریت دکمه‌های جدید Reply Keyboard
-    $replyButtons = [
-        '➕ اتصال کانال جدید',
-        '📋 کانال‌های من',
-        '📖 راهنمای استفاده',
-        '💝 حمایت مالی',
-        '🌟 اسپانسر ما',
-        '🐞 گزارش باگ'
+    /* ── دکمه‌های Reply Keyboard (شامل سازگاری با لیبل‌های قدیمی) ── */
+    $replyButtonMap = [
+        '➕ اتصال کانال'        => 'connect',
+        '➕ اتصال کانال جدید'    => 'connect',
+        '📋 کانال‌های من'       => 'mylist',
+        '📖 راهنما'            => 'help',
+        '📖 راهنمای استفاده'    => 'help',
+        '🌟 اسپانسر'           => 'sponsor',
+        '🌟 اسپانسر ما'         => 'sponsor',
+        '🐞 گزارش باگ'         => 'bug',
     ];
 
-    if (in_array($text, $replyButtons, true)) {
+    if (isset($replyButtonMap[$text])) {
         $forceCheck = checkUserForceJoin($userId, false);
         if (!$forceCheck['ok']) {
             sendForceJoinPrompt($chatId, $forceCheck['missing']);
             return;
         }
 
-        switch ($text) {
-            case '➕ اتصال کانال جدید':
-                sendPlainText($chatId, "➕ برای اتصال کانال، ابتدا ربات آنفالویاب را در کانال خود ادمین کنید.\n\n"
-                    . "سپس دستور زیر را بفرستید و بعد از add، نام واقعی کانال خود را بنویسید:\n\n"
-                    . "/add mynews\n\n"
-                    . "در این نمونه، mynews نام کانال است. شما باید نام کانال خود را جایگزین کنید.");
+        switch ($replyButtonMap[$text]) {
+            case 'connect':
+                sendPlainText($chatId, "➕ اتصال کانال\n\n"
+                    . "1. ربات رو تو کانال ادمین کنید\n"
+                    . "2. این رو بفرستید:\n/add mynews");
                 break;
-            case '📋 کانال‌های من':
+            case 'mylist':
                 handleMyList($chatId, $userId);
                 break;
-            case '📖 راهنمای استفاده':
+            case 'help':
                 sendPlainText($chatId, getHelpText());
                 break;
-            case '💝 حمایت مالی':
-                sendPlainText($chatId, "💝 حمایت مالی از ربات آنفالویاب:\n\n" . getDonateText());
+            case 'sponsor':
+                sendPlainText($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText());
                 break;
-            case '🌟 اسپانسر ما':
-                sendPlainText($chatId, "🌟 اسپانسر ربات آنفالویاب:\n\n" . getSponsorText());
-                break;
-            case '🐞 گزارش باگ':
-                sendPlainText($chatId, "🐞 گزارش باگ یا مشکل\n\n"
-                    . "اگر در استفاده از ربات به مشکلی برخوردید یا باگی دیدید، لطفاً آن را برای ما ارسال کنید.\n\n"
-                    . "روش ارسال:\n"
-                    . "دستور bug را نوشته، سپس یک فاصله و بعد متن مشکل خود را بنویسید.\n\n"
-                    . "نمونه:\n\n"
-                    . "/bug ربات گزارش خروج اعضا را ارسال نمی‌کند\n\n"
-                    . "پیام شما مستقیماً برای مدیریت ربات ارسال می‌شود.");
+            case 'bug':
+                sendPlainText($chatId, "🐞 گزارش باگ\n\n"
+                    . "مشکل رو این‌طوری بفرستید:\n\n"
+                    . "/bug متن مشکل\n\n"
+                    . "مستقیم برای مدیر ربات میاد.");
                 break;
         }
         return;
     }
 
-    // مدیریت دستورات متنی (با اسلش)
+    /* ── دستورات متنی ── */
     [$cmd, $arg] = parseCommand($text);
     if ($cmd === null) {
         return;
@@ -560,6 +520,9 @@ function handleTextMessage(array $message): void {
     }
 
     switch ($cmd) {
+
+        /* ════════ عمومی ════════ */
+
         case 'start':
             sendStartMenu($chatId);
             break;
@@ -569,16 +532,17 @@ function handleTextMessage(array $message): void {
             break;
 
         case 'status':
-            $msg = "🤖 وضعیت ربات آنفالویاب: آنلاین\n"
-                 . "🕒 زمان سرور: " . date('Y-m-d H:i:s');
+            $msg = "🤖 ربات آنفالویاب: آنلاین\n"
+                 . "🕒 " . date('Y-m-d H:i:s');
             if (isBotOwner($userId)) {
                 $dbOk = (REDIS_URL !== '' && REDIS_TOKEN !== '') ? '✅ متصل' : '❌ قطع';
-                $msg .= "\n🗄 دیتابیس Redis: " . $dbOk;
-                $poolSize = count(getForceChannelsPool());
-                $msg .= "\n📦 تعداد کانال‌های استخر عضویت اجباری: " . $poolSize;
+                $msg .= "\n🗄 Redis: " . $dbOk
+                      . "\n📦 استخر عضویت اجباری: " . count(getForceChannelsPool());
             }
             sendPlainText($chatId, $msg);
             break;
+
+        /* ════════ مدیریت کانال ════════ */
 
         case 'add':
         case 'connect':
@@ -597,105 +561,100 @@ function handleTextMessage(array $message): void {
             handleHistory($chatId, $userId, (string)$arg);
             break;
 
+        /* ════════ گزارش باگ ════════ */
+
         case 'bug':
             if ($arg === '') {
-                sendPlainText($chatId, "❌ متن مشکل خود را بعد از دستور bug بنویسید.\n\n"
-                    . "نمونه:\n\n"
-                    . "/bug ربات گزارش خروج اعضا را ارسال نمی‌کند");
+                sendPlainText($chatId, "❌ متن مشکل رو بعد از bug بنویسید.\n\nمثال:\n/bug ربات گزارش نمی‌ده");
                 return;
             }
             if (BOT_OWNER_ID === '') {
-                sendPlainText($chatId, "❌ در حال حاضر امکان دریافت گزارش وجود ندارد.");
+                sendPlainText($chatId, "❌ دریافت گزارش فعلاً غیرفعاله.");
                 return;
             }
             $senderName = trim(($message['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? '')) ?: 'بدون نام';
             $senderUsername = $message['from']['username'] ?? '';
-            $senderUsernameLine = $senderUsername !== '' ? '@' . $senderUsername : 'ندارد';
-            $bugText = "🐞 گزارش باگ یا مشکل جدید\n\n"
-                . "👤 فرستنده: " . $senderName . "\n"
-                . "🔖 یوزرنیم: " . $senderUsernameLine . "\n"
-                . "🔢 آیدی کاربر: " . $userId . "\n"
+            $bugText = "🐞 گزارش باگ\n\n"
+                . "👤 " . $senderName . "\n"
+                . "🔖 " . ($senderUsername !== '' ? '@' . $senderUsername : 'ندارد') . "\n"
+                . "🔢 " . $userId . "\n"
                 . "━━━━━━━━━━━━━━\n"
-                . "📝 متن گزارش:\n" . $arg;
+                . $arg;
             sendPlainText(BOT_OWNER_ID, $bugText);
-            sendPlainText($chatId, "✅ گزارش شما با موفقیت برای مدیریت ربات ارسال شد. با تشکر از همکاری شما.");
+            sendPlainText($chatId, "✅ گزارش ارسال شد. ممنون از همکاریتون!");
             break;
 
+        /* ════════ پنل مدیریت ════════ */
+
         case 'zk9xad':
-            if (!isBotOwner($userId)) {
-                return;
-            }
+        case 'admin':
+            if (!isBotOwner($userId)) return;
             sendPlainText($chatId, getAdminHelpText());
             break;
 
         case 'zk9xch':
-            if (!isBotOwner($userId)) {
-                return;
-            }
+        case 'channels':
+            if (!isBotOwner($userId)) return;
             $all = getAllChannelsMap();
             if (empty($all)) {
-                sendPlainText($chatId, "📭 هیچ کانالی در ربات ثبت نشده است.");
+                sendPlainText($chatId, "📭 هیچ کانالی ثبت نشده.");
                 return;
             }
-            $msg = "👑 لیست کل کانال‌های ثبت‌شده در ربات (" . count($all) . " کانال):\n\n";
+            $msg = "👑 کل کانال‌ها (" . count($all) . "):\n\n";
             foreach ($all as $chId => $info) {
                 $title = $info['title'] ?: 'بدون نام';
                 $un = $info['username'] ? " (" . $info['username'] . ")" : '';
                 $owner = $info['owner_id'] ?? 'نامشخص';
                 $msg .= "🔹 " . $title . $un . "\n"
-                      . "آیدی کانال: " . $chId . "\n"
+                      . "آیدی: " . $chId . "\n"
                       . "مالک: " . $owner . "\n\n";
             }
             sendPlainText($chatId, $msg);
             break;
 
         case 'zk9xfa':
-            if (!isBotOwner($userId)) {
-                return;
-            }
+        case 'forceadd':
+            if (!isBotOwner($userId)) return;
             if ($arg === '') {
-                sendPlainText($chatId, "❌ نمونه: /zk9xfa mychannel");
+                sendPlainText($chatId, "❌ مثال: /forceadd mychannel");
                 return;
             }
             $check = checkBotIsAdminInChannel($arg);
             if (!$check['ok']) {
-                sendPlainText($chatId, "❌ " . $check['error'] . "\n\n"
-                    . "ابتدا ربات را در کانال ادمین کنید با دسترسی مدیریت اعضا، سپس دوباره تلاش کنید.");
+                sendPlainText($chatId, "❌ " . $check['error'] . "\n\nاول ربات رو ادمین کنید.");
                 return;
             }
             if (!addForceChannelToPool($arg)) {
-                sendPlainText($chatId, "❌ خطا در ذخیره‌سازی در دیتابیس. لطفاً دوباره تلاش کنید یا لاگ‌ها را بررسی کنید.");
+                sendPlainText($chatId, "❌ ذخیره نشد. دوباره تلاش کنید.");
                 return;
             }
             $displayTitle = $check['title'] ?: $arg;
-            sendPlainText($chatId, "✅ کانال " . $displayTitle . " با موفقیت به استخر عضویت اجباری اضافه شد.");
+            sendPlainText($chatId, "✅ کانال «" . $displayTitle . "» به استخر اضافه شد.");
             break;
 
         case 'zk9xfd':
-            if (!isBotOwner($userId)) {
-                return;
-            }
+        case 'forcedel':
+            if (!isBotOwner($userId)) return;
             if ($arg === '') {
-                sendPlainText($chatId, "❌ نمونه: /zk9xfd mychannel");
+                sendPlainText($chatId, "❌ مثال: /forcedel mychannel");
                 return;
             }
             if (removeForceChannelFromPool($arg)) {
-                sendPlainText($chatId, "🗑 کانال " . $arg . " از استخر عضویت اجباری حذف شد.");
+                sendPlainText($chatId, "🗑 کانال از استخر حذف شد.");
             } else {
-                sendPlainText($chatId, "❌ این کانال در استخر عضویت اجباری پیدا نشد.");
+                sendPlainText($chatId, "❌ این کانال تو استخر پیدا نشد.");
             }
             break;
 
         case 'zk9xfl':
-            if (!isBotOwner($userId)) {
-                return;
-            }
+        case 'forcelist':
+            if (!isBotOwner($userId)) return;
             $pool = getForceChannelsPool();
             if (empty($pool)) {
-                sendPlainText($chatId, "📭 استخر عضویت اجباری خالی است.");
+                sendPlainText($chatId, "📭 استخر خالیه.");
                 return;
             }
-            $msg = "📢 کانال‌های موجود در استخر عضویت اجباری (" . count($pool) . " کانال):\n\n";
+            $msg = "📢 استخر عضویت اجباری (" . count($pool) . "):\n\n";
             foreach ($pool as $idx => $ch) {
                 $num = $idx + 1;
                 $msg .= $num . ". " . $ch . "\n";
@@ -704,29 +663,28 @@ function handleTextMessage(array $message): void {
             break;
 
         case 'zk9xst':
-            if (!isBotOwner($userId)) {
-                return;
-            }
+        case 'forcetest':
+            if (!isBotOwner($userId)) return;
             $pool = getForceChannelsPool();
-            $msg = "🔍 دیباگ سیستم عضویت اجباری\n"
-                 . "━━━━━━━━━━━━━━━━━━\n\n";
-            $msg .= "📦 استخر: " . count($pool) . " کانال\n\n";
+            $msg = "🔍 دیباگ عضویت اجباری\n"
+                 . "━━━━━━━━━━━━━━━━━━\n\n"
+                 . "📦 استخر: " . count($pool) . " کانال\n\n";
 
             if (empty($pool)) {
-                $msg .= "⚠️ استخر خالی است. هیچ کاربری عضویت اجباری نمی‌بیند.\n"
-                      . "با دستور /zk9xfa کانال اضافه کنید.\n";
+                $msg .= "⚠️ استخر خالیه. هیچ کاربری عضویت اجباری نمی‌بینه.\n"
+                      . "با /forceadd کانال اضافه کنید.\n";
             } else {
                 foreach ($pool as $idx => $ch) {
                     $num = $idx + 1;
                     $adminCheck = checkBotIsAdminInChannel($ch);
                     $msg .= $num . ". " . $ch . "\n";
                     if ($adminCheck['ok']) {
-                        $msg .= "   ✅ ربات ادمین است\n";
-                        $msg .= "   نام: " . ($adminCheck['title'] ?: 'بدون نام') . "\n";
-                        $msg .= "   آیدی: " . $adminCheck['real_id'] . "\n";
+                        $msg .= "   ✅ ربات ادمین است\n"
+                              . "   نام: " . ($adminCheck['title'] ?: 'بدون نام') . "\n"
+                              . "   آیدی: " . $adminCheck['real_id'] . "\n";
                     } else {
-                        $msg .= "   ❌ " . $adminCheck['error'] . "\n";
-                        $msg .= "   این کانال عملاً غیرفعال است.\n";
+                        $msg .= "   ❌ " . $adminCheck['error'] . "\n"
+                              . "   این کانال عملاً غیرفعال است.\n";
                     }
                     $msg .= "\n";
                 }
@@ -745,7 +703,7 @@ function handleTextMessage(array $message): void {
                       . "👤 تست برای کاربر: " . $targetUserId . "\n\n";
 
                 if (isBotOwner($targetUserId)) {
-                    $msg .= "⚠️ این کاربر مالک ربات است و همیشه از عضویت اجباری معاف می‌شود.\n";
+                    $msg .= "⚠️ این کاربر مالک ربات است و معاف است.\n";
                 } else {
                     $assignmentKey = "user_force_channels:" . $targetUserId;
                     $assignedRaw = redisGet($assignmentKey);
@@ -753,7 +711,7 @@ function handleTextMessage(array $message): void {
 
                     if (empty($assigned) || !is_array($assigned)) {
                         $msg .= "هیچ کانالی به این کاربر اختصاص نیافته.\n"
-                              . "با زدن /start در حساب کاربر، اختصاص انجام می‌شود.\n";
+                              . "با زدن /start در حساب کاربر، اختصاص انجام می‌شه.\n";
                     } else {
                         $msg .= "کانال‌های اختصاص‌یافته:\n";
                         $missing = [];
@@ -762,7 +720,7 @@ function handleTextMessage(array $message): void {
                             if ($memberResult === true) {
                                 $msg .= "  " . $ch . " : ✅ عضو است\n";
                             } elseif ($memberResult === false) {
-                                $msg .= "  " . $ch . " : ❌ عضو نیست (باید مسدود شود)\n";
+                                $msg .= "  " . $ch . " : ❌ عضو نیست\n";
                                 $missing[] = $ch;
                             } else {
                                 $msg .= "  " . $ch . " : ⚠️ خطا در بررسی\n";
@@ -770,46 +728,36 @@ function handleTextMessage(array $message): void {
                         }
                         $msg .= "\n";
                         if (empty($missing)) {
-                            $msg .= "نتیجه: این کاربر نباید عضویت اجباری ببیند (در همه عضو است یا خطا).\n";
+                            $msg .= "نتیجه: کاربر نباید عضویت اجباری ببینه.\n";
                         } else {
-                            $msg .= "نتیجه: این کاربر باید عضویت اجباری ببیند (" . count($missing) . " کانال کم).\n";
+                            $msg .= "نتیجه: کاربر باید عضویت اجباری ببینه (" . count($missing) . " کانال کم).\n";
                         }
                     }
                 }
             } else {
                 $msg .= "━━━━━━━━━━━━━━━━━━\n"
-                      . "برای تست یک کاربر خاص، آیدی عددی او را بعد از دستور بنویسید:\n\n"
-                      . "/zk9xst 123456789";
+                      . "برای تست کاربر خاص، آیدی عددی رو بعد از دستور بنویسید:\n\n"
+                      . "/forcetest 123456789";
             }
-
             sendPlainText($chatId, $msg);
             break;
 
         case 'zk9xsp':
-            if (!isBotOwner($userId)) {
-                return;
-            }
+        case 'sponsor':
+            if (!isBotOwner($userId)) return;
             if ($arg === '') {
-                sendPlainText($chatId, "❌ متن اسپانسر را بعد از دستور بنویسید.\n\nنمونه:\n\n/zk9xsp کانال اسپانسر ما: mychannel");
+                sendPlainText($chatId, "❌ متن اسپانسر رو بعد از دستور بنویسید.\n\nمثال:\n/sponsor کانال ما: mychannel");
                 return;
             }
             setSponsorText($arg);
-            sendPlainText($chatId, "✅ متن اسپانسر با موفقیت بروزرسانی شد.");
+            sendPlainText($chatId, "✅ متن اسپانسر بروزرسانی شد.");
             break;
 
-        case 'zk9xdn':
-            if (!isBotOwner($userId)) {
-                return;
-            }
-            if ($arg === '') {
-                sendPlainText($chatId, "❌ متن حمایت مالی را بعد از دستور بنویسید.\n\nنمونه:\n\n/zk9xdn شماره کارت: 6037xxxxxxxxxxxx");
-                return;
-            }
-            setDonateText($arg);
-            sendPlainText($chatId, "✅ متن حمایت مالی با موفقیت بروزرسانی شد.");
-            break;
+        // ⛔ case 'zk9xdn' حذف شد (فاز ۱)
     }
 }
+
+/* ───────────────── رویداد خروج عضو ───────────────── */
 
 function processMemberLeft(array $chat, array $user, ?array $actor = null): void {
     if (!empty($user['is_bot'])) {
@@ -851,17 +799,17 @@ function processMemberLeft(array $chat, array $user, ?array $actor = null): void
     $actionType = 'خروج از کانال';
     if ($actor !== null && isset($actor['id']) && (string)$actor['id'] !== (string)$userId) {
         $actorName = trim(($actor['first_name'] ?? '') . ' ' . ($actor['last_name'] ?? '')) ?: 'ادمین';
-        $actionType = "حذف شده توسط " . $actorName;
+        $actionType = "حذف توسط " . $actorName;
     }
 
-    $report = "📤 گزارش خروج عضو از کانال\n\n"
+    $report = "📤 گزارش خروج عضو\n\n"
             . "📢 کانال: " . $channelLine . "\n"
-            . "🆔 آیدی کانال: " . $channelIdStr . "\n"
+            . "🆔 آیدی: " . $channelIdStr . "\n"
             . "━━━━━━━━━━━━━━\n"
-            . "👤 نام کاربر: " . $fullName . "\n"
+            . "👤 نام: " . $fullName . "\n"
             . "🔖 یوزرنیم: " . $usernameLine . "\n"
-            . "🔢 آیدی عددی: " . $userId . "\n"
-            . "📌 نوع رویداد: " . $actionType . "\n"
+            . "🔢 آیدی: " . $userId . "\n"
+            . "📌 نوع: " . $actionType . "\n"
             . "🕒 زمان: " . $timeStr;
 
     sendPlainText($ownerId, $report);
