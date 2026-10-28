@@ -210,7 +210,7 @@ function handleHistory($chatId, $userId, string $arg): void {
     sendPlainText($chatId, $msg);
 }
 
-/* ───────────────── قابلیت‌های ویژه (ذکرشمار و ختم) ───────────────── */
+/* ───────────────── قابلیت‌های ویژه (فقط ختم) ───────────────── */
 
 function sendOrEditMenu($chatId, ?int $messageId, string $text, array $inlineKeyboard): void {
     if ($messageId !== null) {
@@ -223,43 +223,23 @@ function sendOrEditMenu($chatId, ?int $messageId, string $text, array $inlineKey
 }
 
 function sendSpecialMenu($chatId, ?int $messageId = null): void {
-    $inlineKeyboard = [[['text' => '📿 ذکرشمار و ختم', 'callback_data' => 'zekr_menu']]];
+    $inlineKeyboard = [[['text' => '📿 ختم‌های کانال', 'callback_data' => 'khatm_menu']]];
     sendOrEditMenu($chatId, $messageId, "✨ قابلیت‌های ویژه\n\nاز بین گزینه‌های زیر انتخاب کنید:", ['inline_keyboard' => $inlineKeyboard]);
 }
 
-function sendZekrMenu($chatId, $userId, ?int $messageId = null): void {
-    $rows = [
-        [['text' => '📿 ذکر شخصی', 'callback_data' => 'zekr_personal']],
-    ];
-    // اگه کاربر کانال داره، دکمه ساخت ختم نشون داده بشه
+function sendKhatmMenu($chatId, $userId, ?int $messageId = null): void {
+    $rows = [];
     if (!empty(getOwnerChannels($userId))) {
         $rows[] = [['text' => '➕ ساخت ختم جدید', 'callback_data' => 'khatm_create']];
+    } else {
+        $rows[] = [['text' => '⚠️ ابتدا یک کانال متصل کنید', 'callback_data' => 'menu_connect']];
     }
     $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'special_menu']];
     
-    sendOrEditMenu($chatId, $messageId, "📿 بخش ذکرشمار\n\nیک گزینه را انتخاب کنید:", ['inline_keyboard' => $rows]);
+    sendOrEditMenu($chatId, $messageId, "📿 بخش ختم‌های کانال\n\nیک گزینه را انتخاب کنید:", ['inline_keyboard' => $rows]);
 }
 
-function sendPersonalZekrMenu($chatId, ?int $messageId = null): void {
-    $zekrs = ['salavat' => 'صلوات', 'istighfar' => 'استغفرالله', 'tahlil' => 'لا اله الا الله', 'tasbih' => 'سبحان الله', 'hamd' => 'الحمدلله', 'takbir' => 'الله اکبر'];
-    $rows = []; $current = [];
-    foreach ($zekrs as $key => $label) {
-        $current[] = ['text' => $label, 'callback_data' => 'zekr_show:' . $key];
-        if (count($current) === 2) { $rows[] = $current; $current = []; }
-    }
-    if (!empty($current)) $rows[] = $current;
-    $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_menu']];
-
-    sendOrEditMenu($chatId, $messageId, "📿 ذکر شخصی\n\nیک ذکر انتخاب کنید:", ['inline_keyboard' => $rows]);
-}
-
-function buildPersonalZekrPage($userId, string $zekrKey): string {
-    $count = zekrGet((string)$userId, $zekrKey);
-    $labels = ['salavat' => 'صلوات', 'istighfar' => 'استغفرالله', 'tahlil' => 'لا اله الا الله', 'tasbih' => 'سبحان الله', 'hamd' => 'الحمدلله', 'takbir' => 'الله اکبر'];
-    return "📿 " . ($labels[$zekrKey] ?? $zekrKey) . "\n\nتعداد: {$count}\n\nبا دکمه‌های زیر بشمار:";
-}
-
-function handleZekrCallback(array $cb): void {
+function handleKhatmCallback(array $cb): void {
     $cbId = $cb['id'] ?? null;
     $data = $cb['data'] ?? '';
     $chatId = $cb['message']['chat']['id'] ?? null;
@@ -270,8 +250,7 @@ function handleZekrCallback(array $cb): void {
     if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
 
     if ($data === 'special_menu') { answerCallbackQuery($cbId); sendSpecialMenu($chatId, $messageId); return; }
-    if ($data === 'zekr_menu') { answerCallbackQuery($cbId); sendZekrMenu($chatId, $userIdStr, $messageId); return; }
-    if ($data === 'zekr_personal') { answerCallbackQuery($cbId); sendPersonalZekrMenu($chatId, $messageId); return; }
+    if ($data === 'khatm_menu') { answerCallbackQuery($cbId); sendKhatmMenu($chatId, $userIdStr, $messageId); return; }
     
     if ($data === 'khatm_create') {
         answerCallbackQuery($cbId);
@@ -281,50 +260,6 @@ function handleZekrCallback(array $cb): void {
         }
         setUserState($userIdStr, 'khatm_title');
         sendPlainText($chatId, "➕ ساخت ختم جدید\n\nعنوان ختم را وارد کنید (مثلاً: صلوات):");
-        return;
-    }
-
-    if (strpos($data, 'zekr_show:') === 0) {
-        $zekrKey = substr($data, 10);
-        $text = buildPersonalZekrPage($userIdStr, $zekrKey);
-        $keyboard = ['inline_keyboard' => [
-            [['text' => '➕ ۱', 'callback_data' => "zekr_add:{$zekrKey}:1"], ['text' => '➕ ۱۰', 'callback_data' => "zekr_add:{$zekrKey}:10"], ['text' => '➕ ۱۰۰', 'callback_data' => "zekr_add:{$zekrKey}:100"]],
-            [['text' => '🔄 ریست', 'callback_data' => "zekr_reset:{$zekrKey}"]],
-            [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_personal']],
-        ]];
-        answerCallbackQuery($cbId);
-        sendOrEditMenu($chatId, $messageId, $text, $keyboard);
-        return;
-    }
-
-    if (strpos($data, 'zekr_add:') === 0) {
-        $parts = explode(':', $data);
-        if (count($parts) === 3) {
-            $zekrKey = $parts[1]; $amount = (int)$parts[2];
-            $newCount = zekrAdd($userIdStr, $zekrKey, $amount);
-            answerCallbackQuery($cbId, "✅ +{$amount} | مجموع: {$newCount}");
-            $text = buildPersonalZekrPage($userIdStr, $zekrKey);
-            $keyboard = ['inline_keyboard' => [
-                [['text' => '➕ ۱', 'callback_data' => "zekr_add:{$zekrKey}:1"], ['text' => '➕ ۱۰', 'callback_data' => "zekr_add:{$zekrKey}:10"], ['text' => '➕ ۱۰۰', 'callback_data' => "zekr_add:{$zekrKey}:100"]],
-                [['text' => '🔄 ریست', 'callback_data' => "zekr_reset:{$zekrKey}"]],
-                [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_personal']],
-            ]];
-            sendOrEditMenu($chatId, $messageId, $text, $keyboard);
-        }
-        return;
-    }
-
-    if (strpos($data, 'zekr_reset:') === 0) {
-        $zekrKey = substr($data, 11);
-        zekrReset($userIdStr, $zekrKey);
-        answerCallbackQuery($cbId, '🔄 شمارش ریست شد.');
-        $text = buildPersonalZekrPage($userIdStr, $zekrKey);
-        $keyboard = ['inline_keyboard' => [
-            [['text' => '➕ ۱', 'callback_data' => "zekr_add:{$zekrKey}:1"], ['text' => '➕ ۱۰', 'callback_data' => "zekr_add:{$zekrKey}:10"], ['text' => '➕ ۱۰۰', 'callback_data' => "zekr_add:{$zekrKey}:100"]],
-            [['text' => '🔄 ریست', 'callback_data' => "zekr_reset:{$zekrKey}"]],
-            [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_personal']],
-        ]];
-        sendOrEditMenu($chatId, $messageId, $text, $keyboard);
         return;
     }
 
@@ -386,7 +321,6 @@ function handleKhatmState($chatId, $userId, string $state, string $text, array $
         }
         $data['buttons'] = $parts;
         
-        // گرفتن کانال‌های کاربر
         $channels = getOwnerChannels($userId);
         $rows = [];
         foreach ($channels as $chId => $info) {
@@ -424,7 +358,6 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
         ]
     ];
 
-    // ارسال به کانال
     $payload = [
         'chat_id' => $chId,
         'caption' => $caption,
@@ -455,7 +388,6 @@ function sendKhatmUI($chatId, $userId, string $khatmId, string $alertMsg = ''): 
     $totalDone = $khatm['total_done'] ?? 0;
     $remaining = max(0, $khatm['target'] - $totalDone);
 
-    // ساخت متن
     $caption = "عنوان ختم : " . $khatm['title'] . "\n"
              . "توضیحات ختم : " . $khatm['desc'];
              
@@ -463,7 +395,6 @@ function sendKhatmUI($chatId, $userId, string $khatmId, string $alertMsg = ''): 
         $caption = "{$alertMsg}\n\n" . $caption;
     }
 
-    // ساخت کیبورد پایین (Reply Keyboard)
     $b = $khatm['buttons'];
     $keyboard = [
         'keyboard' => [
@@ -477,7 +408,6 @@ function sendKhatmUI($chatId, $userId, string $khatmId, string $alertMsg = ''): 
         'resize_keyboard' => true
     ];
 
-    // ارسال عکس + متن + کیبورد
     if (!empty($khatm['image'])) {
         $res = apiPost('sendPhoto', [
             'chat_id' => $chatId,
@@ -488,7 +418,6 @@ function sendKhatmUI($chatId, $userId, string $khatmId, string $alertMsg = ''): 
         if ($res !== null && !empty($res['ok'])) return;
     }
     
-    // اگر عکس نبود یا ارسال عکس خطا داد:
     sendMessageWithKeyboard($chatId, $caption, $keyboard);
 }
 
@@ -523,7 +452,6 @@ function handleCallbackQuery(array $cb): void {
         return;
     }
 
-    // بررسی عضویت اجباری برای بقیه
     if ($data !== 'menu_bug') {
         $check = checkUserForceJoin($userId, false);
         if (!$check['ok']) {
@@ -533,12 +461,24 @@ function handleCallbackQuery(array $cb): void {
         }
     }
 
-    if ($data === 'special_menu' || strpos($data, 'zekr_') === 0) {
-        handleZekrCallback($cb);
+    if ($data === 'special_menu' || strpos($data, 'khatm_') === 0) {
+        handleKhatmCallback($cb);
         return;
     }
 
     answerCallbackQuery($cbId);
+
+    switch ($data) {
+        case 'menu_connect':
+            sendPlainText($chatId, "➕ اتصال کانال\n\n1. ربات رو تو کانال ادمین کنید\n2. این رو بفرستید:\n/add mynews");
+            break;
+        case 'menu_mylist': handleMyList($chatId, $userId); break;
+        case 'menu_help': sendPlainText($chatId, getHelpText()); break;
+        case 'menu_sponsor': sendPlainText($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
+        case 'menu_bug':
+            sendPlainText($chatId, "🐞 گزارش باگ\n\nمشکل رو این‌طوری بفرستید:\n\n/bug متن مشکل\n\nمستقیم برای مدیر ربات میاد.");
+            break;
+    }
 }
 
 /* ───────────────── Router متن ───────────────── */
@@ -554,14 +494,12 @@ function handleTextMessage(array $message): void {
 
     $userIdStr = (string)$userId;
 
-    /* ── بررسی State Machine (ساخت ختم) ── */
     $userState = getUserState($userIdStr);
     if ($userState !== null && strpos($userState, 'khatm_') === 0) {
         handleKhatmState($chatId, $userId, $userState, $text, $message);
         return;
     }
 
-    /* ── بررسی کیبوردهای پایین (Reply Keyboard) ── */
     $replyButtonMap = [
         '➕ اتصال کانال' => 'connect', '➕ اتصال کانال جدید' => 'connect',
         '📋 کانال‌های من' => 'mylist', '📖 راهنما' => 'help',
@@ -571,14 +509,12 @@ function handleTextMessage(array $message): void {
         '🔙 بازگشت به منوی اصلی' => 'back_to_main'
     ];
 
-    // بررسی دکمه‌های کیبورد ختم
     $activeKhatmId = getUserActiveKhatm($userIdStr);
     if ($activeKhatmId && !isset($replyButtonMap[$text])) {
         $khatm = getKhatm($activeKhatmId);
         if ($khatm) {
             $b = $khatm['buttons'];
             if (in_array($text, $b, true)) {
-                // شمارش ذکر
                 addKhatmContribution($activeKhatmId, $userIdStr, (int)$text);
                 sendKhatmUI($chatId, $userId, $activeKhatmId, "✅ {$text} ذکر ثبت شد.");
                 return;
@@ -586,7 +522,6 @@ function handleTextMessage(array $message): void {
                 sendPlainText($chatId, "🌟 اسپانسر:\n\n" . getSponsorText());
                 return;
             } elseif (strpos($text, 'مجموع:') === 0 || strpos($text, 'مانده:') === 0) {
-                // اگر روی مجموع/مانده کلیک کرد، دوباره کیبورد را فرستاده تا همگام شود
                 sendKhatmUI($chatId, $userId, $activeKhatmId, "📊 آمار لحظه‌ای ختم:");
                 return;
             }
@@ -615,7 +550,6 @@ function handleTextMessage(array $message): void {
         return;
     }
 
-    /* ── دستورات متنی ── */
     [$cmd, $arg] = parseCommand($text);
     if ($cmd === null) return;
 
@@ -663,7 +597,6 @@ function handleTextMessage(array $message): void {
             sendPlainText($chatId, "✅ گزارش ارسال شد.");
             break;
 
-        /* ── پنل مدیریت ── */
         case 'zk9xad':
             if (!isBotOwner($userId)) return;
             sendPlainText($chatId, getAdminHelpText()); break;

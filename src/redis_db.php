@@ -257,40 +257,6 @@ function getSponsorText(): string {
     return ($text !== null && trim($text) !== '') ? $text : "🌟 هنوز اسپانسری ثبت نشده.\nبرای رزرو با مدیر ربات در تماس باشید.";
 }
 
-/* ───────────────── ذکرشمار عمومی ───────────────── */
-
-function zekrGet(string $userId, string $zekrKey): int {
-    $val = redisGet("zekr:count:{$userId}:{$zekrKey}");
-    return $val === null ? 0 : (int)$val;
-}
-
-function zekrSet(string $userId, string $zekrKey, int $count): void {
-    redisSet("zekr:count:{$userId}:{$zekrKey}", (string)$count);
-}
-
-function zekrAdd(string $userId, string $zekrKey, int $amount): int {
-    $current = zekrGet($userId, $zekrKey);
-    $new = $current + $amount;
-    zekrSet($userId, $zekrKey, $new);
-    $total = zekrGetTotal($userId);
-    redisSet("zekr:total:{$userId}", (string)($total + $amount));
-    return $new;
-}
-
-function zekrReset(string $userId, string $zekrKey): void {
-    $current = zekrGet($userId, $zekrKey);
-    zekrSet($userId, $zekrKey, 0);
-    if ($current > 0) {
-        $total = zekrGetTotal($userId);
-        redisSet("zekr:total:{$userId}", (string)max(0, $total - $current));
-    }
-}
-
-function zekrGetTotal(string $userId): int {
-    $val = redisGet("zekr:total:{$userId}");
-    return $val === null ? 0 : (int)$val;
-}
-
 /* ───────────────── سیستم ختم (فاز ۲) ───────────────── */
 
 function setUserState(string $userId, string $state, array $data = []): void {
