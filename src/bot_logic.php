@@ -201,13 +201,13 @@ function getAdminHelpText(): string {
     return "👑 پنل مدیریت (مخصوص مالک)\n"
          . "━━━━━━━━━━━━━━━━━━\n\n"
          . "📊 مشاهده\n"
-         . "/zk9xch (یا /channels) — کل کانال‌ها\n"
-         . "/zk9xfl (یا /forcelist) — استخر عضویت اجباری\n"
-         . "/zk9xst [آیدی] (یا /forcetest) — دیباگ\n\n"
+         . "/zk9xch — کل کانال‌ها\n"
+         . "/zk9xfl — استخر عضویت اجباری\n"
+         . "/zk9xst [آیدی] — دیباگ\n\n"
          . "⚙️ تنظیمات\n"
-         . "/zk9xfa کانال (یا /forceadd) — افزودن به استخر\n"
-         . "/zk9xfd کانال (یا /forcedel) — حذف از استخر\n"
-         . "/zk9xsp متن (یا /sponsor) — تنظیم اسپانسر\n\n"
+         . "/zk9xfa کانال — افزودن به استخر\n"
+         . "/zk9xfd کانال — حذف از استخر\n"
+         . "/zk9xsp متن — تنظیم اسپانسر\n\n"
          . "━━━━━━━━━━━━━━━━━━\n"
          . "⚠️ این دستورات رو جایی منتشر نکنید.";
 }
@@ -584,16 +584,14 @@ function handleTextMessage(array $message): void {
             sendPlainText($chatId, "✅ گزارش ارسال شد. ممنون از همکاریتون!");
             break;
 
-        /* ════════ پنل مدیریت ════════ */
+        /* ════════ پنل مدیریت (فقط zk9x*) ════════ */
 
         case 'zk9xad':
-        case 'admin':
             if (!isBotOwner($userId)) return;
             sendPlainText($chatId, getAdminHelpText());
             break;
 
         case 'zk9xch':
-        case 'channels':
             if (!isBotOwner($userId)) return;
             $all = getAllChannelsMap();
             if (empty($all)) {
@@ -613,10 +611,9 @@ function handleTextMessage(array $message): void {
             break;
 
         case 'zk9xfa':
-        case 'forceadd':
             if (!isBotOwner($userId)) return;
             if ($arg === '') {
-                sendPlainText($chatId, "❌ مثال: /forceadd mychannel");
+                sendPlainText($chatId, "❌ مثال: /zk9xfa mychannel");
                 return;
             }
             $check = checkBotIsAdminInChannel($arg);
@@ -633,10 +630,9 @@ function handleTextMessage(array $message): void {
             break;
 
         case 'zk9xfd':
-        case 'forcedel':
             if (!isBotOwner($userId)) return;
             if ($arg === '') {
-                sendPlainText($chatId, "❌ مثال: /forcedel mychannel");
+                sendPlainText($chatId, "❌ مثال: /zk9xfd mychannel");
                 return;
             }
             if (removeForceChannelFromPool($arg)) {
@@ -647,7 +643,6 @@ function handleTextMessage(array $message): void {
             break;
 
         case 'zk9xfl':
-        case 'forcelist':
             if (!isBotOwner($userId)) return;
             $pool = getForceChannelsPool();
             if (empty($pool)) {
@@ -663,7 +658,6 @@ function handleTextMessage(array $message): void {
             break;
 
         case 'zk9xst':
-        case 'forcetest':
             if (!isBotOwner($userId)) return;
             $pool = getForceChannelsPool();
             $msg = "🔍 دیباگ عضویت اجباری\n"
@@ -672,7 +666,7 @@ function handleTextMessage(array $message): void {
 
             if (empty($pool)) {
                 $msg .= "⚠️ استخر خالیه. هیچ کاربری عضویت اجباری نمی‌بینه.\n"
-                      . "با /forceadd کانال اضافه کنید.\n";
+                      . "با /zk9xfa کانال اضافه کنید.\n";
             } else {
                 foreach ($pool as $idx => $ch) {
                     $num = $idx + 1;
@@ -737,16 +731,15 @@ function handleTextMessage(array $message): void {
             } else {
                 $msg .= "━━━━━━━━━━━━━━━━━━\n"
                       . "برای تست کاربر خاص، آیدی عددی رو بعد از دستور بنویسید:\n\n"
-                      . "/forcetest 123456789";
+                      . "/zk9xst 123456789";
             }
             sendPlainText($chatId, $msg);
             break;
 
         case 'zk9xsp':
-        case 'sponsor':
             if (!isBotOwner($userId)) return;
             if ($arg === '') {
-                sendPlainText($chatId, "❌ متن اسپانسر رو بعد از دستور بنویسید.\n\nمثال:\n/sponsor کانال ما: mychannel");
+                sendPlainText($chatId, "❌ متن اسپانسر رو بعد از دستور بنویسید.\n\nمثال:\n/zk9xsp کانال ما: mychannel");
                 return;
             }
             setSponsorText($arg);
