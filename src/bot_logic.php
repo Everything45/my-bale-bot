@@ -61,14 +61,20 @@ function normalizeDigits(string $s): string {
 }
 
 /**
- * پاسخ اطلاع‌رسانی به کاربر؛ پیام اطلاع‌رسانی قبلیِ همان چت را حذف می‌کند
- * تا فقط «یک» پیام ربات در چت باقی بماند. شناسه‌ی پیام جدید را برمی‌گرداند.
- * (گزارش خروج اعضا و ... که باید ماندگار باشند با sendPlainText ارسال می‌شوند.)
+ * پاسخ به کاربر. دو نوع پیام داریم:
+ *
+ *  - ناوبری ($replace = true، پیش‌فرض): منو، سؤال، عضویت اجباری، خطا، پنل شمارش.
+ *    پیام ناوبریِ قبلیِ همان چت حذف می‌شود تا فقط «یک» پیام ناوبری باقی بماند.
+ *  - محتوا ($replace = false): لیست کانال‌ها، تاریخچه، راهنما، اسپانسر، نتیجه‌ی عملیات.
+ *    پیام ماندگار است؛ نه پیام قبلی را حذف می‌کند و نه خودش بعداً حذف می‌شود.
+ *
+ * شناسه‌ی پیام جدید را برمی‌گرداند.
+ * (گزارش خروج اعضا و ... که باید ماندگار باشند مستقیم با sendPlainText ارسال می‌شوند.)
  */
-function replyInfo($chatId, string $text, ?array $markup = null): ?int {
+function replyInfo($chatId, string $text, ?array $markup = null, bool $replace = true): ?int {
     if (!$chatId) return null;
     $key = "last_info_msg:{$chatId}";
-    $old = redisGet($key);
+    $old = $replace ? redisGet($key) : null;
 
     $payload = ['chat_id' => $chatId, 'text' => $text, 'parse_mode' => 'Markdown'];
     if ($markup !== null) $payload['reply_markup'] = $markup;
@@ -83,6 +89,10 @@ function replyInfo($chatId, string $text, ?array $markup = null): ?int {
     }
 
     $newId = (int)$res['result']['message_id'];
+    if (!$replace) {
+        return $newId;
+    }
+
     redisSet($key, (string)$newId, INFO_MSG_TTL);
     if ($old !== null && $old !== '' && (int)$old !== $newId) {
         deleteMessageSafe($chatId, (int)$old);
@@ -215,7 +225,7 @@ function handleConnect($chatId, $userId, string $arg): void {
         replyInfo($chatId, "⛔ شما تو این کانال ادمین یا سازنده نیستید."); return;
     }
     setChannelOwner($realChannelId, $userId, $title, $username);
-    replyInfo($chatId, "✅ کانال «" . $title . "» متصل شد.\n\nاز الان گزارش خروج اعضا براتون میاد.");
+    replyInfo($chatId, "✅ کانال «" . $title . "» متصل شد.\n\nاز الان گزارش خروج اعضا براتون میاد.", null, false);
 }
 
 function handleMyList($chatId, $userId): void {
@@ -225,7 +235,7 @@ function handleMyList($chatId, $userId): void {
     foreach ($channels as $chId => $info) {
         $msg .= "🔹 " . ($info['title'] ?: 'بدون نام') . ($info['username'] ? " ({$info['username']})" : '') . "\nآیدی: {$chId}\n\n";
     }
-    replyInfo($chatId, $msg);
+    replyInfo($chatId, $msg, null, false);
 }
 
 function handleRemoveChannel($chatId, $userId, string $arg): void {
@@ -236,7 +246,7 @@ function handleRemoveChannel($chatId, $userId, string $arg): void {
     if ($owner === null) { replyInfo($chatId, "❌ این کانال تو ربات ثبت نشده."); return; }
     if ((string)$owner !== (string)$userId && !isBotOwner($userId)) { replyInfo($chatId, "⛔ شما مالک این کانال نیستید."); return; }
     removeChannel($realId);
-    replyInfo($chatId, "🗑 کانال حذف شد.");
+    replyInfo($chatId, "🗑 کانال حذف شد.", null, false);
 }
 
 function handleHistory($chatId, $userId, string $arg): void {
@@ -252,7 +262,7 @@ function handleHistory($chatId, $userId, string $arg): void {
         $num = $idx + 1;
         $msg .= "{$num}. {$item['name']} ({$item['user_id']})\n🕒 {$item['time']}\n\n";
     }
-    replyInfo($chatId, $msg);
+    replyInfo($chatId, $msg, null, false);
 }
 
 /* ───────────────── قابلیت‌های ویژه (ختم کانال) ───────────────── */
@@ -827,8 +837,8 @@ function handleCallbackQuery(array $cb): void {
             );
             break;
         case 'menu_mylist': handleMyList($chatId, $userId); break;
-        case 'menu_help': replyInfo($chatId, getHelpText()); break;
-        case 'menu_sponsor': replyInfo($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
+        case 'menu_help': replyInfo($chatId, getHelpText(), null, false); break;
+        case 'menu_sponsor': replyInfo($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText(), null, false); break;
         case 'menu_bug': replyInfo($chatId, "🐞 گزارش باگ\n\nمشکل رو این‌طوری بفرستید:\n\n/bug متن مشکل"); break;
     }
 }
@@ -881,8 +891,8 @@ function handleTextMessage(array $message): void {
         switch ($replyButtonMap[$text]) {
             case 'connect': replyInfo($chatId, "➕ اتصال کانال\n\n1. ربات رو تو کانال ادمین کنید\n2. این رو بفرستید:\n/add mynews"); break;
             case 'mylist': handleMyList($chatId, $userId); break;
-            case 'help': replyInfo($chatId, getHelpText()); break;
-            case 'sponsor': replyInfo($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
+            case 'help': replyInfo($chatId, getHelpText(), null, false); break;
+            case 'sponsor': replyInfo($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText(), null, false); break;
             case 'bug': replyInfo($chatId, "🐞 گزارش باگ\n\nمشکل رو این‌طوری بفرستید:\n\n/bug متن مشکل"); break;
             case 'special': sendSpecialMenu($chatId); break;
         }
@@ -917,11 +927,11 @@ function handleTextMessage(array $message): void {
             sendStartMenu($chatId);
             break;
 
-        case 'help': replyInfo($chatId, getHelpText()); break;
+        case 'help': replyInfo($chatId, getHelpText(), null, false); break;
         case 'status':
             $msg = "🤖 ربات آنفالویاب: آنلاین\n🕒 " . date('Y-m-d H:i:s');
             if (isBotOwner($userId)) $msg .= "\n🗄 Redis: ✅\n📦 استخر: " . count(getForceChannelsPool());
-            replyInfo($chatId, $msg);
+            replyInfo($chatId, $msg, null, false);
             break;
         case 'add':
         case 'connect': handleConnect($chatId, $userId, (string)$arg); break;
@@ -936,39 +946,39 @@ function handleTextMessage(array $message): void {
             $senderUsername = $message['from']['username'] ?? '';
             $bugText = "🐞 گزارش باگ\n\n👤 " . $senderName . "\n🔖 " . ($senderUsername !== '' ? '@' . $senderUsername : 'ندارد') . "\n🔢 " . $userId . "\n━━━━━━━━━━━━━━\n" . $arg;
             sendPlainText(BOT_OWNER_ID, $bugText); // گزارش برای مالک ماندگار است
-            replyInfo($chatId, "✅ گزارش ارسال شد.");
+            replyInfo($chatId, "✅ گزارش ارسال شد.", null, false);
             break;
 
         case 'zk9xad':
             if (!isBotOwner($userId)) return;
-            replyInfo($chatId, getAdminHelpText()); break;
+            replyInfo($chatId, getAdminHelpText(), null, false); break;
         case 'zk9xch':
             if (!isBotOwner($userId)) return;
             $all = getAllChannelsMap();
-            if (empty($all)) { replyInfo($chatId, "📭 خالی است."); return; }
+            if (empty($all)) { replyInfo($chatId, "📭 خالی است.", null, false); return; }
             $msg = "👑 کل کانال‌ها (" . count($all) . "):\n\n";
             foreach ($all as $chId => $info) $msg .= "🔹 " . ($info['title'] ?: 'بدون نام') . "\nآیدی: {$chId}\nمالک: {$info['owner_id']}\n\n";
-            replyInfo($chatId, $msg);
+            replyInfo($chatId, $msg, null, false);
             break;
         case 'zk9xfa':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') { replyInfo($chatId, "❌ مثال: /zk9xfa mychannel"); return; }
+            if ($arg === '') { replyInfo($chatId, "❌ مثال: /zk9xfa mychannel", null, false); return; }
             $check = checkBotIsAdminInChannel($arg);
-            if (!$check['ok'] || !addForceChannelToPool($arg)) { replyInfo($chatId, "❌ خطا. اول ربات رو ادمین کنید."); return; }
-            replyInfo($chatId, "✅ اضافه شد.");
+            if (!$check['ok'] || !addForceChannelToPool($arg)) { replyInfo($chatId, "❌ خطا. اول ربات رو ادمین کنید.", null, false); return; }
+            replyInfo($chatId, "✅ اضافه شد.", null, false);
             break;
         case 'zk9xfd':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') { replyInfo($chatId, "❌ مثال: /zk9xfd mychannel"); return; }
-            replyInfo($chatId, removeForceChannelFromPool($arg) ? "🗑 حذف شد." : "❌ پیدا نشد.");
+            if ($arg === '') { replyInfo($chatId, "❌ مثال: /zk9xfd mychannel", null, false); return; }
+            replyInfo($chatId, removeForceChannelFromPool($arg) ? "🗑 حذف شد." : "❌ پیدا نشد.", null, false);
             break;
         case 'zk9xfl':
             if (!isBotOwner($userId)) return;
             $pool = getForceChannelsPool();
-            if (empty($pool)) { replyInfo($chatId, "📭 استخر خالیه."); return; }
+            if (empty($pool)) { replyInfo($chatId, "📭 استخر خالیه.", null, false); return; }
             $msg = "📢 استخر (" . count($pool) . "):\n\n";
             foreach ($pool as $idx => $ch) $msg .= ($idx + 1) . ". " . $ch . "\n";
-            replyInfo($chatId, $msg);
+            replyInfo($chatId, $msg, null, false);
             break;
         case 'zk9xst':
             if (!isBotOwner($userId)) return;
@@ -978,13 +988,13 @@ function handleTextMessage(array $message): void {
                 $c = checkBotIsAdminInChannel($ch);
                 $msg .= ($idx + 1) . ". " . $ch . ($c['ok'] ? " ✅" : " ❌ ({$c['error']})") . "\n";
             }
-            replyInfo($chatId, $msg);
+            replyInfo($chatId, $msg, null, false);
             break;
         case 'zk9xsp':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') { replyInfo($chatId, "❌ متن اسپانسر رو بنویسید."); return; }
+            if ($arg === '') { replyInfo($chatId, "❌ متن اسپانسر رو بنویسید.", null, false); return; }
             setSponsorText($arg);
-            replyInfo($chatId, "✅ اسپانسر بروزرسانی شد.");
+            replyInfo($chatId, "✅ اسپانسر بروزرسانی شد.", null, false);
             break;
     }
 }
