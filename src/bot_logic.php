@@ -212,8 +212,6 @@ function handleHistory($chatId, $userId, string $arg): void {
 
 function sendOrEditMenu($chatId, ?int $messageId, string $text, array $inlineKeyboard): void {
     if ($messageId !== null) {
-        $res = apiPost('editMessageText', ['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $text, 'parse_mode' => 'Markdown', 'reply_markup' => $inlineKeyboard]);
-        if ($res !== null && !empty($res['ok'])) return;
         $res = apiPost('editMessageText', ['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $text, 'reply_markup' => $inlineKeyboard]);
         if ($res !== null && !empty($res['ok'])) return;
     }
@@ -347,10 +345,8 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
         return;
     }
 
-    // لینک هدایت به ربات
     $deepLink = "https://ble.ir/{$botUsername}?start=" . $khatmId;
 
-    // کیبورد لینک‌دار برای کانال
     $inlineKeyboard = [
         [['text' => (string)$b[0], 'url' => $deepLink]],
         [['text' => (string)$b[1], 'url' => $deepLink]],
@@ -367,6 +363,7 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
              . "👇 برای ثبت شمارش، روی دکمه‌های زیر بزنید:";
 
     $channelMsgId = null;
+    $msgType = 'text';
 
     // 1. ارسال به کانال
     if (!empty($khatm['image'])) {
@@ -378,8 +375,8 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
         ]);
         if ($res !== null && !empty($res['ok'])) {
             $channelMsgId = $res['result']['message_id'];
+            $msgType = 'photo';
         } else {
-            // اگر بله عکس را با دکمه قبول نکرد، متن را می‌فرستیم
             $res = apiPost('sendMessage', [
                 'chat_id' => $chId,
                 'text' => $caption,
@@ -396,9 +393,10 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
         if ($res !== null && !empty($res['ok'])) $channelMsgId = $res['result']['message_id'];
     }
 
-    // 2. ذخیره آیدی پیام کانال برای آپدیت‌های بعدی
+    // 2. ذخیره آیدی پیام کانال و نوع آن برای آپدیت‌های بعدی
     if ($channelMsgId) {
         $khatm['channel_msg_id'] = $channelMsgId;
+        $khatm['msg_type'] = $msgType;
         updateKhatm($khatmId, $khatm);
         sendPlainText($chatId, "✅ ختم با موفقیت در کانال ارسال شد!\n\nاعضا با کلیک روی دکمه‌ها به ربات هدایت شده و شمارش را ثبت می‌کنند. آمار کانال هم به صورت زنده آپدیت می‌شود.");
     } else {
@@ -406,7 +404,7 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
     }
 }
 
-// آپدیت کپشن پیام کانال
+// آپدیت کپشن یا متن پیام کانال
 function updateChannelKhatmCaption($channelId, $channelMsgId, $khatmId) {
     $khatm = getKhatm($khatmId);
     if (!$khatm || !$channelMsgId) return;
@@ -419,11 +417,19 @@ function updateChannelKhatmCaption($channelId, $channelMsgId, $khatmId) {
              . "مجموع: {$total} | مانده: {$remain}\n\n"
              . "👇 برای ثبت شمارش، روی دکمه‌های زیر بزنید:";
 
-    apiPost('editMessageCaption', [
-        'chat_id' => $channelId,
-        'message_id' => $channelMsgId,
-        'caption' => $caption
-    ]);
+    if (($khatm['msg_type'] ?? 'text') === 'photo') {
+        apiPost('editMessageCaption', [
+            'chat_id' => $channelId,
+            'message_id' => $channelMsgId,
+            'caption' => $caption
+        ]);
+    } else {
+        apiPost('editMessageText', [
+            'chat_id' => $channelId,
+            'message_id' => $channelMsgId,
+            'text' => $caption
+        ]);
+    }
 }
 
 /* ───────────────── Callback ها ───────────────── */
@@ -445,13 +451,15 @@ function handleCallbackQuery(array $cb): void {
             $khatmId = $parts[1];
             $amount = (int)$parts[2];
             $khatm = getKhatm($khatmId);
+            
             if ($khatm) {
                 addKhatmContribution($khatmId, (string)$userId, $amount);
-                $newKhatm = getKhatm($khatmId);
+                $newKhatm = getKhatm($khatmId); // دریافت دیتای آپدیت شده
                 
+                // پاسخ سریع به کاربر
                 answerCallbackQuery($cbId, "✅ {$amount} ذکر ثبت شد.");
                 
-                // آپدیت دکمه‌های کاربر در چت خصوصی
+                // ویرایش پیام در چت خصوصی (بدون ایجاد پیام جدید)
                 if ($messageId !== null) {
                     $b = $newKhatm['buttons'];
                     $total = $newKhatm['total_done'];
@@ -466,7 +474,24 @@ function handleCallbackQuery(array $cb): void {
                             ['text' => "مانده: {$remain}", 'callback_data' => 'khatm_refresh']
                         ]
                     ];
-                    sendMessageWithKeyboard($chatId, "📿 شما در حال شرکت در ختم «{$newKhatm['title']}» هستید.\n\nبرای ثبت شمارش، روی دکمه‌های زیر بزنید:", ['inline_keyboard' => $inlineKeyboard]);
+                    
+                    $privateText = "📿 شما در حال شرکت در ختم «{$newKhatm['title']}» هستید.\n\nبرای ثبت شمارش، روی دکمه‌های زیر بزنید:";
+                    
+                    $editRes = apiPost('editMessageText', [
+                        'chat_id' => $chatId,
+                        'message_id' => $messageId,
+                        'text' => $privateText,
+                        'reply_markup' => $inlineKeyboard
+                    ]);
+                    
+                    // اگر ویرایش متن خطا داد، فقط دکمه‌ها را آپدیت کن
+                    if ($editRes === null || empty($editRes['ok'])) {
+                        apiPost('editMessageReplyMarkup', [
+                            'chat_id' => $chatId,
+                            'message_id' => $messageId,
+                            'reply_markup' => $inlineKeyboard
+                        ]);
+                    }
                 }
 
                 // آپدیت زنده پیام کانال
@@ -612,7 +637,6 @@ function handleTextMessage(array $message): void {
                     $total = $khatm['total_done'] ?? 0;
                     $remain = max(0, $khatm['target'] - $total);
                     
-                    // کیبورد تعاملی برای چت خصوصی
                     $inlineKeyboard = [
                         [['text' => (string)$b[0], 'callback_data' => "khatm_count:{$khatmId}:{$b[0]}"]],
                         [['text' => (string)$b[1], 'callback_data' => "khatm_count:{$khatmId}:{$b[1]}"]],
