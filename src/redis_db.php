@@ -226,7 +226,7 @@ function getSponsorText(): string {
     return ($text !== null && trim($text) !== '') ? $text : "🌟 هنوز اسپانسری ثبت نشده.\nبرای رزرو با مدیر ربات در تماس باشید.";
 }
 
-/* ───────────────── سیستم ختم (فاز ۲) ───────────────── */
+/* ───────────────── سیستم ختم (Poll) ───────────────── */
 
 function setUserState(string $userId, string $state, array $data = []): void {
     redisSet("user_state:{$userId}", $state);
@@ -268,8 +268,27 @@ function updateKhatmTotal(string $id, int $amount): void {
 }
 
 function addKhatmContribution(string $khatmId, string $userId, int $amount): void {
+    if ($amount === 0) return;
     $key = "khatm_contrib:{$khatmId}:{$userId}";
     $current = (int)(redisGet($key) ?? 0);
     redisSet($key, (string)($current + $amount));
     updateKhatmTotal($khatmId, $amount);
+}
+
+// توابع مربوط به ردیابی نظرسنجی
+function setKhatmPollMapping(string $pollId, string $khatmId): void {
+    redisSet("khatm_poll:{$pollId}", $khatmId);
+}
+
+function getKhatmIdByPoll(string $pollId): ?string {
+    return redisGet("khatm_poll:{$pollId}");
+}
+
+function setKhatmUserVote(string $pollId, string $userId, int $optionIndex): void {
+    redisSet("khatm_poll_vote:{$pollId}:{$userId}", (string)$optionIndex);
+}
+
+function getKhatmUserVote(string $pollId, string $userId): int {
+    $val = redisGet("khatm_poll_vote:{$pollId}:{$userId}");
+    return $val === null ? -1 : (int)$val;
 }
