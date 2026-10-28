@@ -70,7 +70,8 @@ if (is_array($message)) {
         finishRequest();
     }
 
-    if (isset($message['text'])) {
+    // 🔄 اصلاح شد: الان هم متن و هم عکس رو دریافت می‌کنه
+    if (isset($message['text']) || isset($message['photo'])) {
         handleTextMessage($message);
         finishRequest();
     }

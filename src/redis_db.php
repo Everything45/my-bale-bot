@@ -54,12 +54,8 @@ function redisSet(string $key, string $value, ?int $ttl = null): bool {
 
 function redisGet(string $key): ?string {
     $res = redisResult(redisExec(['GET', $key]));
-    if ($res === null) {
-        return null;
-    }
-    if (is_array($res)) {
-        return json_encode($res, JSON_UNESCAPED_UNICODE);
-    }
+    if ($res === null) return null;
+    if (is_array($res)) return json_encode($res, JSON_UNESCAPED_UNICODE);
     return (string)$res;
 }
 
@@ -73,14 +69,10 @@ function redisHSet(string $key, string $field, string $value): bool {
 
 function redisHGetAll(string $key): array {
     $result = redisResult(redisExec(['HGETALL', $key]));
-    if (!is_array($result) || empty($result)) {
-        return [];
-    }
+    if (!is_array($result) || empty($result)) return [];
     $keys = array_keys($result);
     $isFlat = $keys === range(0, count($result) - 1);
-    if (!$isFlat) {
-        return $result;
-    }
+    if (!$isFlat) return $result;
     $pairs = [];
     $count = count($result);
     for ($i = 0; $i + 1 < $count; $i += 2) {
@@ -121,21 +113,11 @@ function redisSMembers(string $key): array {
 function setChannelOwner($channelId, $ownerId, string $title = '', string $username = ''): void {
     $channelIdStr = (string)$channelId;
     $ownerIdStr = (string)$ownerId;
-
-    $info = json_encode([
-        'owner_id' => $ownerIdStr,
-        'title' => $title,
-        'username' => $username,
-        'updated_at' => date('Y-m-d H:i:s'),
-    ], JSON_UNESCAPED_UNICODE);
-
+    $info = json_encode(['owner_id' => $ownerIdStr, 'title' => $title, 'username' => $username, 'updated_at' => date('Y-m-d H:i:s')], JSON_UNESCAPED_UNICODE);
     redisSet("channel_owner:{$channelIdStr}", $ownerIdStr);
     redisSet("channel_info:{$channelIdStr}", $info);
     redisSAdd('all_channels_set', $channelIdStr);
-
-    if (!redisHSet('all_channels_map', $channelIdStr, $info)) {
-        error_log('[Channel] HSET failed for ' . $channelIdStr);
-    }
+    redisHSet('all_channels_map', $channelIdStr, $info);
 }
 
 function getChannelOwner($channelId): ?string {
@@ -150,26 +132,21 @@ function getAllChannelsMap(): array {
         $infoStr = redisGet("channel_info:{$chIdStr}");
         if ($infoStr === null) continue;
         $decoded = json_decode($infoStr, true);
-        if (is_array($decoded)) {
-            $result[$chIdStr] = $decoded;
-        }
+        if (is_array($decoded)) $result[$chIdStr] = $decoded;
     }
     $raw = redisHGetAll('all_channels_map');
     foreach ($raw as $chId => $infoVal) {
         $chIdStr = (string)$chId;
         if (isset($result[$chIdStr])) continue;
         $decoded = is_array($infoVal) ? $infoVal : json_decode((string)$infoVal, true);
-        if (is_array($decoded)) {
-            $result[$chIdStr] = $decoded;
-        }
+        if (is_array($decoded)) $result[$chIdStr] = $decoded;
     }
     return $result;
 }
 
 function removeChannel($channelId): bool {
     $channelIdStr = (string)$channelId;
-    $owner = getChannelOwner($channelIdStr);
-    if ($owner === null) return false;
+    if (getChannelOwner($channelIdStr) === null) return false;
     redisDel("channel_owner:{$channelIdStr}");
     redisDel("channel_info:{$channelIdStr}");
     redisDel("leave_history:{$channelIdStr}");
@@ -183,9 +160,7 @@ function getOwnerChannels($ownerId): array {
     $map = getAllChannelsMap();
     $result = [];
     foreach ($map as $chId => $info) {
-        if ((string)($info['owner_id'] ?? '') === $ownerIdStr) {
-            $result[$chId] = $info;
-        }
+        if ((string)($info['owner_id'] ?? '') === $ownerIdStr) $result[$chId] = $info;
     }
     return $result;
 }
@@ -200,18 +175,14 @@ function getLeaveHistory($channelId): array {
     $raw = redisLRange('leave_history:' . (string)$channelId, 0, 49);
     $result = [];
     foreach ($raw as $item) {
-        if (is_array($item)) {
-            $result[] = $item; continue;
-        }
+        if (is_array($item)) { $result[] = $item; continue; }
         $decoded = json_decode((string)$item, true);
         if (is_array($decoded)) $result[] = $decoded;
     }
     return $result;
 }
 
-function getForceChannelsPool(): array {
-    return redisSMembers('force_channels_pool');
-}
+function getForceChannelsPool(): array { return redisSMembers('force_channels_pool'); }
 
 function addForceChannelToPool(string $channelRef): bool {
     $channelRef = trim($channelRef);
@@ -242,15 +213,13 @@ function assignRandomForceChannels($userId, bool $reset = false): array {
             }
         }
     }
-    if (count($pool) <= 2) { $selected = $pool; }
+    if (count($pool) <= 2) $selected = $pool;
     else { $keys = array_rand($pool, 2); $selected = [$pool[$keys[0]], $pool[$keys[1]]]; }
     redisSet($key, json_encode($selected, JSON_UNESCAPED_UNICODE), 86400 * 7);
     return $selected;
 }
 
-function setSponsorText(string $text): void {
-    redisSet('bot_sponsor_text', $text);
-}
+function setSponsorText(string $text): void { redisSet('bot_sponsor_text', $text); }
 
 function getSponsorText(): string {
     $text = redisGet('bot_sponsor_text');
@@ -261,14 +230,10 @@ function getSponsorText(): string {
 
 function setUserState(string $userId, string $state, array $data = []): void {
     redisSet("user_state:{$userId}", $state);
-    if (!empty($data)) {
-        redisSet("user_state_data:{$userId}", json_encode($data, JSON_UNESCAPED_UNICODE));
-    }
+    if (!empty($data)) redisSet("user_state_data:{$userId}", json_encode($data, JSON_UNESCAPED_UNICODE));
 }
 
-function getUserState(string $userId): ?string {
-    return redisGet("user_state:{$userId}");
-}
+function getUserState(string $userId): ?string { return redisGet("user_state:{$userId}"); }
 
 function getUserStateData(string $userId): array {
     $raw = redisGet("user_state_data:{$userId}");
@@ -307,20 +272,4 @@ function addKhatmContribution(string $khatmId, string $userId, int $amount): voi
     $current = (int)(redisGet($key) ?? 0);
     redisSet($key, (string)($current + $amount));
     updateKhatmTotal($khatmId, $amount);
-}
-
-function getKhatmContribution(string $khatmId, string $userId): int {
-    return (int)(redisGet("khatm_contrib:{$khatmId}:{$userId}") ?? 0);
-}
-
-function setUserActiveKhatm(string $userId, string $khatmId): void {
-    redisSet("user_active_khatm:{$userId}", $khatmId);
-}
-
-function getUserActiveKhatm(string $userId): ?string {
-    return redisGet("user_active_khatm:{$userId}");
-}
-
-function delUserActiveKhatm(string $userId): void {
-    redisDel("user_active_khatm:{$userId}");
 }
