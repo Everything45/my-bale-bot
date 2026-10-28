@@ -112,13 +112,6 @@ function editOrSendMessage($chatId, ?int $messageId, string $text, ?array $reply
     return null;
 }
 
-function deleteMessageSafe($chatId, $messageId): void {
-    if (!$chatId || !$messageId) {
-        return;
-    }
-    apiPost('deleteMessage', ['chat_id' => $chatId, 'message_id' => (int)$messageId]);
-}
-
 function answerCallbackQuery($callbackId, string $text = '', bool $showAlert = false): void {
     if (!$callbackId) {
         return;
