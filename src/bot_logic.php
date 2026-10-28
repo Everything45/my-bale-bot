@@ -2,6 +2,12 @@
 // src/bot_logic.php
 declare(strict_types=1);
 
+const KHATM_EDIT_THROTTLE_SECONDS = 3; // حداقل فاصله‌ی ادیت پست کانال
+const KHATM_MAX_TITLE = 100;
+const KHATM_MAX_DESC = 700;            // کپشن عکس حداکثر ۱۰۲۴ کاراکتر است
+const KHATM_MAX_TARGET = 1000000000;
+const KHATM_MAX_BUTTON = 1000000;
+
 function finishRequest(): void {
     if (!headers_sent()) { http_response_code(200); }
     echo 'OK';
@@ -41,6 +47,16 @@ function parseCommand(string $text): array {
     $text = trim($text);
     if (!preg_match('/^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$/us', $text, $m)) return [null, null];
     return [strtolower($m[1]), isset($m[2]) ? trim($m[2]) : ''];
+}
+
+/** ارقام فارسی و عربی را به لاتین تبدیل می‌کند */
+function normalizeDigits(string $s): string {
+    return strtr($s, [
+        '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
+        '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+        '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
+        '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
+    ]);
 }
 
 /* ───────────────── عضویت اجباری ───────────────── */
@@ -246,18 +262,83 @@ function handleKhatmCallback(array $cb): void {
 
     if ($data === 'special_menu') { answerCallbackQuery($cbId); sendSpecialMenu($chatId, $messageId); return; }
     if ($data === 'khatm_menu') { answerCallbackQuery($cbId); sendKhatmMenu($chatId, $userIdStr, $messageId); return; }
-    
+
     if ($data === 'khatm_create') {
         answerCallbackQuery($cbId);
         if (empty(getOwnerChannels($userId))) {
             sendPlainText($chatId, "❌ برای ساخت ختم، ابتدا باید یک کانال به ربات متصل کنید.");
             return;
         }
+        clearUserState($userIdStr); // جلوگیری از باقی ماندن دیتای فرایند قبلی
         setUserState($userIdStr, 'khatm_title');
-        sendPlainText($chatId, "➕ ساخت ختم جدید\n\nعنوان ختم را وارد کنید (مثلاً: صلوات):");
+        sendPlainText($chatId, "➕ ساخت ختم جدید\n\nعنوان ختم را وارد کنید (مثلاً: صلوات):\n\nبرای لغو، /start را بزنید.");
         return;
     }
     answerCallbackQuery($cbId);
+}
+
+/* ───────────────── ابزارهای ختم (متن و کیبورد) ───────────────── */
+
+function khatmRemaining(array $khatm): int {
+    return max(0, (int)($khatm['target'] ?? 0) - (int)($khatm['total_done'] ?? 0));
+}
+
+function isKhatmComplete(array $khatm): bool {
+    return khatmRemaining($khatm) === 0;
+}
+
+function buildKhatmCaption(array $khatm): string {
+    $caption = "عنوان ختم : " . $khatm['title'] . "\n"
+             . "توضیحات ختم : " . $khatm['desc'];
+    if (isKhatmComplete($khatm)) {
+        $caption .= "\n\n✅ این ختم با موفقیت تکمیل شد.";
+    }
+    return $caption;
+}
+
+// کیبورد پست کانال: ردیف اول آمار (فقط نمایشی)، ردیف دوم لینک شرکت در ختم
+function buildKhatmChannelKeyboard(array $khatm, string $botUsername): array {
+    $total = (int)($khatm['total_done'] ?? 0);
+    $remain = khatmRemaining($khatm);
+
+    $rows = [[
+        ['text' => "مجموع: {$total}", 'callback_data' => 'khatm_refresh'],
+        ['text' => "مانده: {$remain}", 'callback_data' => 'khatm_refresh'],
+    ]];
+
+    if ($remain === 0) {
+        $rows[] = [['text' => '✅ ختم تکمیل شد', 'callback_data' => 'khatm_refresh']];
+    } else {
+        $deepLink = "https://ble.ir/{$botUsername}?start=" . $khatm['id'];
+        $rows[] = [['text' => '📿 شرکت در ختم', 'url' => $deepLink]];
+    }
+    return ['inline_keyboard' => $rows];
+}
+
+function buildKhatmPrivateText(array $khatm): string {
+    if (isKhatmComplete($khatm)) {
+        return "✅ ختم «{$khatm['title']}» تکمیل شد. از مشارکت شما سپاسگزاریم.";
+    }
+    return "📿 شما در حال شرکت در ختم «{$khatm['title']}» هستید.\n\nبرای ثبت شمارش، روی دکمه‌های زیر بزنید:";
+}
+
+function buildKhatmPrivateKeyboard(array $khatm): array {
+    $khatmId = $khatm['id'];
+    $total = (int)($khatm['total_done'] ?? 0);
+    $remain = khatmRemaining($khatm);
+    $rows = [];
+
+    if ($remain > 0) {
+        foreach ($khatm['buttons'] as $amount) {
+            $amount = (int)$amount;
+            $rows[] = [['text' => (string)$amount, 'callback_data' => "khatm_count:{$khatmId}:{$amount}"]];
+        }
+    }
+    $rows[] = [
+        ['text' => "مجموع: {$total}", 'callback_data' => 'khatm_refresh'],
+        ['text' => "مانده: {$remain}", 'callback_data' => 'khatm_refresh'],
+    ];
+    return ['inline_keyboard' => $rows];
 }
 
 /* ───────────────── فرآیند ساخت ختم (State Machine) ───────────────── */
@@ -267,6 +348,10 @@ function handleKhatmState($chatId, $userId, string $state, string $text, array $
     $data = getUserStateData($userIdStr);
 
     if ($state === 'khatm_title') {
+        if ($text === '' || mb_strlen($text) > KHATM_MAX_TITLE) {
+            sendPlainText($chatId, "❌ عنوان باید متنی و حداکثر " . KHATM_MAX_TITLE . " کاراکتر باشد.");
+            return;
+        }
         $data['title'] = $text;
         setUserState($userIdStr, 'khatm_desc', $data);
         sendPlainText($chatId, "✅ عنوان ثبت شد.\n\nحالا توضیحات ختم را وارد کنید:");
@@ -274,6 +359,10 @@ function handleKhatmState($chatId, $userId, string $state, string $text, array $
     }
 
     if ($state === 'khatm_desc') {
+        if ($text === '' || mb_strlen($text) > KHATM_MAX_DESC) {
+            sendPlainText($chatId, "❌ توضیحات باید متنی و حداکثر " . KHATM_MAX_DESC . " کاراکتر باشد.");
+            return;
+        }
         $data['desc'] = $text;
         setUserState($userIdStr, 'khatm_image', $data);
         sendPlainText($chatId, "✅ توضیحات ثبت شد.\n\nحالا عکس ختم را ارسال کنید (یا کلمه «ندارد» را بفرستید):");
@@ -283,7 +372,7 @@ function handleKhatmState($chatId, $userId, string $state, string $text, array $
     if ($state === 'khatm_image') {
         if ($text === 'ندارد') {
             $data['image'] = '';
-        } elseif (isset($message['photo']) && is_array($message['photo'])) {
+        } elseif (isset($message['photo']) && is_array($message['photo']) && !empty($message['photo'])) {
             $photo = end($message['photo']);
             $data['image'] = $photo['file_id'];
         } else {
@@ -296,8 +385,8 @@ function handleKhatmState($chatId, $userId, string $state, string $text, array $
     }
 
     if ($state === 'khatm_target') {
-        $target = (int)preg_replace('/[^0-9]/', '', $text);
-        if ($target <= 0) {
+        $target = (int)preg_replace('/[^0-9]/', '', normalizeDigits($text));
+        if ($target <= 0 || $target > KHATM_MAX_TARGET) {
             sendPlainText($chatId, "❌ لطفاً یک عدد معتبر وارد کنید.");
             return;
         }
@@ -308,17 +397,33 @@ function handleKhatmState($chatId, $userId, string $state, string $text, array $
     }
 
     if ($state === 'khatm_buttons') {
-        $parts = array_map('trim', explode(',', $text));
-        if (count($parts) !== 3 || !ctype_digit(implode('', $parts))) {
-            sendPlainText($chatId, "❌ لطفاً دقیقاً ۳ عدد را با کاما وارد کنید (مثلاً: 1,3,7).");
+        $normalized = str_replace(['،', '٬'], ',', normalizeDigits($text));
+        $parts = array_map('trim', explode(',', $normalized));
+
+        $valid = count($parts) === 3;
+        if ($valid) {
+            foreach ($parts as $p) {
+                if ($p === '' || !ctype_digit($p) || (int)$p <= 0 || (int)$p > KHATM_MAX_BUTTON) {
+                    $valid = false;
+                    break;
+                }
+            }
+        }
+        if (!$valid) {
+            sendPlainText($chatId, "❌ لطفاً دقیقاً ۳ عدد مثبت را با کاما وارد کنید (مثلاً: 1,3,7).");
             return;
         }
         $data['buttons'] = array_map('intval', $parts);
-        
+
         $channels = getOwnerChannels($userId);
+        if (empty($channels)) {
+            clearUserState($userIdStr);
+            sendPlainText($chatId, "❌ هیچ کانال متصلی ندارید. ابتدا یک کانال متصل کنید.");
+            return;
+        }
         $rows = [];
         foreach ($channels as $chId => $info) {
-            $rows[] = [['text' => $info['title'] ?: $chId, 'callback_data' => "khatm_channel:{$chId}"]];
+            $rows[] = [['text' => $info['title'] ?: (string)$chId, 'callback_data' => "khatm_channel:{$chId}"]];
         }
         $rows[] = [['text' => '❌ انصراف', 'callback_data' => 'khatm_cancel']];
 
@@ -326,119 +431,119 @@ function handleKhatmState($chatId, $userId, string $state, string $text, array $
         sendMessageWithKeyboard($chatId, "✅ دکمه‌ها ثبت شد.\n\nحالا کانالی که می‌خواهید ختم در آن ارسال شود را انتخاب کنید:", ['inline_keyboard' => $rows]);
         return;
     }
+
+    if ($state === 'khatm_channel') {
+        sendPlainText($chatId, "👆 لطفاً یکی از کانال‌ها را از دکمه‌های بالا انتخاب کنید یا برای لغو /start را بزنید.");
+        return;
+    }
 }
 
 function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
     $userIdStr = (string)$userId;
-    $data = getUserStateData($userIdStr);
-    $data['channel_id'] = $chId;
-    
-    $khatmId = createKhatm($data);
-    clearUserState($userIdStr);
 
-    $khatm = getKhatm($khatmId);
-    $botUsername = getBotUsername(); 
-    
+    if (getUserState($userIdStr) !== 'khatm_channel') {
+        sendPlainText($chatId, "⚠️ این درخواست منقضی شده است. لطفاً ساخت ختم را از ابتدا شروع کنید.");
+        return;
+    }
+
+    $data = getUserStateData($userIdStr);
+    foreach (['title', 'desc', 'image', 'target', 'buttons'] as $required) {
+        if (!isset($data[$required])) {
+            clearUserState($userIdStr);
+            sendPlainText($chatId, "⚠️ اطلاعات ختم ناقص است. لطفاً ساخت ختم را از ابتدا شروع کنید.");
+            return;
+        }
+    }
+
+    $botUsername = getBotUsername();
     if (!$botUsername) {
         sendPlainText($chatId, "❌ خطا در شناسایی ربات. لطفاً دوباره تلاش کنید.");
         return;
     }
 
-    $deepLink = "https://ble.ir/{$botUsername}?start=" . $khatmId;
+    $data['channel_id'] = $chId;
+    $data['owner_id'] = $userIdStr;
 
-    // کیبورد کانال: ۳ دکمه (۲ تا بالا بدون لینک، ۱ تا پایین با لینک)
-    $inlineKeyboard = [
-        [
-            ['text' => "مجموع: 0", 'url' => "#"],
-            ['text' => "مانده: " . $khatm['target'], 'url' => "#"]
-        ],
-        [
-            ['text' => "📿 شرکت در ختم", 'url' => $deepLink]
-        ]
-    ];
+    $khatmId = createKhatm($data);
+    $khatm = getKhatm($khatmId);
+    if ($khatm === null) {
+        sendPlainText($chatId, "❌ خطا در ذخیره ختم. لطفاً دوباره تلاش کنید.");
+        return;
+    }
 
-    $caption = "عنوان ختم : " . $khatm['title'] . "\n"
-             . "توضیحات ختم : " . $khatm['desc'];
+    $keyboard = buildKhatmChannelKeyboard($khatm, $botUsername);
+    $caption = buildKhatmCaption($khatm);
 
     $channelMsgId = null;
     $msgType = 'text';
 
-    // ارسال به کانال
     if (!empty($khatm['image'])) {
         $res = apiPost('sendPhoto', [
             'chat_id' => $chId,
             'photo' => $khatm['image'],
             'caption' => $caption,
-            'reply_markup' => ['inline_keyboard' => $inlineKeyboard]
+            'reply_markup' => $keyboard,
         ]);
         if ($res !== null && !empty($res['ok'])) {
             $channelMsgId = $res['result']['message_id'];
             $msgType = 'photo';
-        } else {
-            $res = apiPost('sendMessage', [
-                'chat_id' => $chId,
-                'text' => $caption,
-                'reply_markup' => ['inline_keyboard' => $inlineKeyboard]
-            ]);
-            if ($res !== null && !empty($res['ok'])) $channelMsgId = $res['result']['message_id'];
         }
-    } else {
+    }
+
+    if ($channelMsgId === null) {
         $res = apiPost('sendMessage', [
             'chat_id' => $chId,
             'text' => $caption,
-            'reply_markup' => ['inline_keyboard' => $inlineKeyboard]
+            'reply_markup' => $keyboard,
         ]);
-        if ($res !== null && !empty($res['ok'])) $channelMsgId = $res['result']['message_id'];
+        if ($res !== null && !empty($res['ok'])) {
+            $channelMsgId = $res['result']['message_id'];
+        }
     }
 
-    // ذخیره آیدی پیام کانال و نوع آن
     if ($channelMsgId) {
         $khatm['channel_msg_id'] = $channelMsgId;
         $khatm['msg_type'] = $msgType;
         updateKhatm($khatmId, $khatm);
+        setChannelActiveKhatm($chId, $khatmId);
+        clearUserState($userIdStr);
         sendPlainText($chatId, "✅ ختم با موفقیت در کانال ارسال شد!\n\nاعضا با کلیک روی دکمه «شرکت در ختم» به ربات هدایت شده و شمارش را ثبت می‌کنند. آمار کانال هم به صورت زنده روی همان پست آپدیت می‌شود.");
     } else {
-        sendPlainText($chatId, "❌ خطا در ارسال پیام به کانال. مطمئن شوید ربات ادمین است.");
+        // ختمِ ارسال‌نشده نباید فعال بماند
+        deleteKhatm($khatmId);
+        sendPlainText($chatId, "❌ خطا در ارسال پیام به کانال. مطمئن شوید ربات ادمین است و دوباره کانال را انتخاب کنید.");
     }
 }
 
-// آپدیت متن و دکمه‌های پیام کانال (کپشن برای عکس، متن برای پیام متنی)
-function updateChannelKhatmMessage($channelId, $channelMsgId, $khatmId) {
+// آپدیت متن و دکمه‌های پست کانال (کپشن برای عکس، متن برای پیام متنی)
+// برای جلوگیری از محدودیت نرخ، ادیت‌ها throttle می‌شوند مگر $force=true
+function updateChannelKhatmMessage(string $khatmId, bool $force = false): void {
     $khatm = getKhatm($khatmId);
-    if (!$khatm || !$channelMsgId) return;
+    if (!$khatm || empty($khatm['channel_id']) || empty($khatm['channel_msg_id'])) return;
 
-    $total = $khatm['total_done'] ?? 0;
-    $remain = max(0, $khatm['target'] - $total);
+    if (!$force && !redisAcquireLock("khatm_edit_lock:{$khatmId}", KHATM_EDIT_THROTTLE_SECONDS)) {
+        return;
+    }
+
     $botUsername = getBotUsername();
-    $deepLink = "https://ble.ir/{$botUsername}?start=" . $khatmId;
+    if (!$botUsername) return;
 
-    // بازسازی کیبورد با اعداد جدید
-    $inlineKeyboard = [
-        [
-            ['text' => "مجموع: {$total}", 'url' => "#"],
-            ['text' => "مانده: {$remain}", 'url' => "#"]
-        ],
-        [
-            ['text' => "📿 شرکت در ختم", 'url' => $deepLink]
-        ]
-    ];
-
-    $caption = "عنوان ختم : " . $khatm['title'] . "\n"
-             . "توضیحات ختم : " . $khatm['desc'];
+    $keyboard = buildKhatmChannelKeyboard($khatm, $botUsername);
+    $caption = buildKhatmCaption($khatm);
 
     if (($khatm['msg_type'] ?? 'text') === 'photo') {
         apiPost('editMessageCaption', [
-            'chat_id' => $channelId,
-            'message_id' => $channelMsgId,
+            'chat_id' => $khatm['channel_id'],
+            'message_id' => $khatm['channel_msg_id'],
             'caption' => $caption,
-            'reply_markup' => ['inline_keyboard' => $inlineKeyboard]
+            'reply_markup' => $keyboard,
         ]);
     } else {
         apiPost('editMessageText', [
-            'chat_id' => $channelId,
-            'message_id' => $channelMsgId,
+            'chat_id' => $khatm['channel_id'],
+            'message_id' => $khatm['channel_msg_id'],
             'text' => $caption,
-            'reply_markup' => ['inline_keyboard' => $inlineKeyboard]
+            'reply_markup' => $keyboard,
         ]);
     }
 }
@@ -458,59 +563,71 @@ function handleCallbackQuery(array $cb): void {
     // دکمه‌های شمارش (در چت خصوصی)
     if (strpos($data, 'khatm_count:') === 0) {
         $parts = explode(':', $data);
-        if (count($parts) === 3) {
-            $khatmId = $parts[1];
-            $amount = (int)$parts[2];
-            $khatm = getKhatm($khatmId);
-            
-            if ($khatm) {
-                addKhatmContribution($khatmId, (string)$userId, $amount);
-                $newKhatm = getKhatm($khatmId);
-                
-                answerCallbackQuery($cbId, "✅ {$amount} ذکر ثبت شد.");
-                
-                // ویرایش پیام در چت خصوصی (بدون ایجاد پیام جدید)
-                if ($messageId !== null) {
-                    $b = $newKhatm['buttons'];
-                    $total = $newKhatm['total_done'];
-                    $remain = max(0, $newKhatm['target'] - $total);
-                    
-                    $inlineKeyboard = [
-                        [['text' => (string)$b[0], 'callback_data' => "khatm_count:{$khatmId}:{$b[0]}"]],
-                        [['text' => (string)$b[1], 'callback_data' => "khatm_count:{$khatmId}:{$b[1]}"]],
-                        [['text' => (string)$b[2], 'callback_data' => "khatm_count:{$khatmId}:{$b[2]}"]],
-                        [
-                            ['text' => "مجموع: {$total}", 'callback_data' => 'khatm_refresh'],
-                            ['text' => "مانده: {$remain}", 'callback_data' => 'khatm_refresh']
-                        ]
-                    ];
-                    
-                    $privateText = "📿 شما در حال شرکت در ختم «{$newKhatm['title']}» هستید.\n\nبرای ثبت شمارش، روی دکمه‌های زیر بزنید:";
-                    
-                    $editRes = apiPost('editMessageText', [
-                        'chat_id' => $chatId,
-                        'message_id' => $messageId,
-                        'text' => $privateText,
-                        'reply_markup' => $inlineKeyboard
-                    ]);
-                    
-                    if ($editRes === null || empty($editRes['ok'])) {
-                        apiPost('editMessageReplyMarkup', [
-                            'chat_id' => $chatId,
-                            'message_id' => $messageId,
-                            'reply_markup' => $inlineKeyboard
-                        ]);
-                    }
-                }
+        if (count($parts) !== 3 || !preg_match('/^khatm_[A-Za-z0-9]+$/', $parts[1])) {
+            answerCallbackQuery($cbId);
+            return;
+        }
+        $khatmId = $parts[1];
+        $amount = (int)$parts[2];
+        $khatm = getKhatm($khatmId);
 
-                // آپدیت زنده پست کانال
-                if (isset($newKhatm['channel_id']) && isset($newKhatm['channel_msg_id'])) {
-                    updateChannelKhatmMessage($newKhatm['channel_id'], $newKhatm['channel_msg_id'], $khatmId);
-                }
-            } else {
-                answerCallbackQuery($cbId, '❌ ختم پیدا نشد.', true);
+        if (!$khatm) {
+            answerCallbackQuery($cbId, '❌ ختم پیدا نشد.', true);
+            return;
+        }
+
+        // مقدار باید دقیقاً یکی از سه دکمه‌ی تعریف‌شده باشد
+        $allowed = array_map('intval', $khatm['buttons'] ?? []);
+        if ($amount <= 0 || !in_array($amount, $allowed, true)) {
+            answerCallbackQuery($cbId, '❌ مقدار نامعتبر.', true);
+            return;
+        }
+
+        if (isKhatmComplete($khatm)) {
+            answerCallbackQuery($cbId, '✅ این ختم تکمیل شده است.', true);
+            if ($messageId !== null) {
+                apiPost('editMessageText', [
+                    'chat_id' => $chatId,
+                    'message_id' => $messageId,
+                    'text' => buildKhatmPrivateText($khatm),
+                    'reply_markup' => buildKhatmPrivateKeyboard($khatm),
+                ]);
+            }
+            return;
+        }
+
+        addKhatmContribution($khatmId, (string)$userId, $amount);
+        $newKhatm = getKhatm($khatmId);
+        if (!$newKhatm) {
+            answerCallbackQuery($cbId, '❌ ختم پیدا نشد.', true);
+            return;
+        }
+
+        answerCallbackQuery($cbId, "✅ {$amount} ذکر ثبت شد.");
+
+        // ویرایش پیام در چت خصوصی (بدون ایجاد پیام جدید)
+        if ($messageId !== null) {
+            $privateText = buildKhatmPrivateText($newKhatm);
+            $privateKeyboard = buildKhatmPrivateKeyboard($newKhatm);
+
+            $editRes = apiPost('editMessageText', [
+                'chat_id' => $chatId,
+                'message_id' => $messageId,
+                'text' => $privateText,
+                'reply_markup' => $privateKeyboard,
+            ]);
+
+            if ($editRes === null || empty($editRes['ok'])) {
+                apiPost('editMessageReplyMarkup', [
+                    'chat_id' => $chatId,
+                    'message_id' => $messageId,
+                    'reply_markup' => $privateKeyboard,
+                ]);
             }
         }
+
+        // آپدیت زنده پست کانال؛ در لحظه‌ی تکمیل بدون throttle
+        updateChannelKhatmMessage($khatmId, isKhatmComplete($newKhatm));
         return;
     }
 
@@ -521,7 +638,7 @@ function handleCallbackQuery(array $cb): void {
 
     if ($data === 'show_sponsor_channel') {
         $sponsorText = getSponsorText();
-        $sponsorText = mb_substr($sponsorText, 0, 200); 
+        $sponsorText = mb_substr($sponsorText, 0, 200);
         answerCallbackQuery($cbId, $sponsorText, true);
         return;
     }
@@ -541,7 +658,16 @@ function handleCallbackQuery(array $cb): void {
     }
 
     if (strpos($data, 'khatm_channel:') === 0) {
+        if ($chatType !== 'private') { answerCallbackQuery($cbId); return; }
         $chId = substr($data, 14);
+
+        // فقط مالک کانال (یا مالک ربات) اجازه‌ی ارسال ختم دارد
+        $owner = getChannelOwner($chId);
+        if ($owner === null || ((string)$owner !== (string)$userId && !isBotOwner($userId))) {
+            answerCallbackQuery($cbId, '⛔ این کانال متعلق به شما نیست.', true);
+            return;
+        }
+
         answerCallbackQuery($cbId, 'در حال ارسال...');
         sendKhatmChannelPreview($chatId, $userId, $chId);
         return;
@@ -587,12 +713,6 @@ function handleTextMessage(array $message): void {
 
     $userIdStr = (string)$userId;
 
-    $userState = getUserState($userIdStr);
-    if ($userState !== null && strpos($userState, 'khatm_') === 0) {
-        handleKhatmState($chatId, $userId, $userState, $text, $message);
-        return;
-    }
-
     $replyButtonMap = [
         '➕ اتصال کانال' => 'connect', '➕ اتصال کانال جدید' => 'connect',
         '📋 کانال‌های من' => 'mylist', '📖 راهنما' => 'help',
@@ -601,6 +721,19 @@ function handleTextMessage(array $message): void {
         '✨ قابلیت‌های ویژه' => 'special',
         '🔙 بازگشت به منوی اصلی' => 'back_to_main'
     ];
+
+    // State Machine فقط در چت خصوصی؛ دستورات و دکمه‌های منو، فرایند را لغو می‌کنند
+    if ($chatType === 'private') {
+        $userState = getUserState($userIdStr);
+        if ($userState !== null && strpos($userState, 'khatm_') === 0) {
+            if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
+                clearUserState($userIdStr);
+            } else {
+                handleKhatmState($chatId, $userId, $userState, $text, $message);
+                return;
+            }
+        }
+    }
 
     if (isset($replyButtonMap[$text])) {
         $forceCheck = checkUserForceJoin($userId, false);
@@ -626,8 +759,8 @@ function handleTextMessage(array $message): void {
 
     $resetForce = ($cmd === 'start');
     $skipForceCheck = in_array($cmd, ['help', 'bug', 'status', 'khatm_stats'], true);
-    
-    if ($cmd === 'start' && strpos($arg, 'khatm_') === 0) $skipForceCheck = true;
+
+    if ($cmd === 'start' && strpos((string)$arg, 'khatm_') === 0) $skipForceCheck = true;
 
     if (!$skipForceCheck) {
         $forceCheck = checkUserForceJoin($userId, $resetForce);
@@ -636,26 +769,12 @@ function handleTextMessage(array $message): void {
 
     switch ($cmd) {
         case 'start':
-            if (strpos($arg, 'khatm_') === 0) {
-                $khatmId = $arg;
-                $khatm = getKhatm($khatmId);
-                
+            if (strpos((string)$arg, 'khatm_') === 0) {
+                $khatmId = (string)$arg;
+                $khatm = preg_match('/^khatm_[A-Za-z0-9]+$/', $khatmId) ? getKhatm($khatmId) : null;
+
                 if ($khatm) {
-                    $b = $khatm['buttons'];
-                    $total = $khatm['total_done'] ?? 0;
-                    $remain = max(0, $khatm['target'] - $total);
-                    
-                    $inlineKeyboard = [
-                        [['text' => (string)$b[0], 'callback_data' => "khatm_count:{$khatmId}:{$b[0]}"]],
-                        [['text' => (string)$b[1], 'callback_data' => "khatm_count:{$khatmId}:{$b[1]}"]],
-                        [['text' => (string)$b[2], 'callback_data' => "khatm_count:{$khatmId}:{$b[2]}"]],
-                        [
-                            ['text' => "مجموع: {$total}", 'callback_data' => 'khatm_refresh'],
-                            ['text' => "مانده: {$remain}", 'callback_data' => 'khatm_refresh']
-                        ]
-                    ];
-                    
-                    sendMessageWithKeyboard($chatId, "📿 شما در حال شرکت در ختم «{$khatm['title']}» هستید.\n\nبرای ثبت شمارش، روی دکمه‌های زیر بزنید:", ['inline_keyboard' => $inlineKeyboard]);
+                    sendMessageWithKeyboard($chatId, buildKhatmPrivateText($khatm), buildKhatmPrivateKeyboard($khatm));
                     return;
                 }
             }

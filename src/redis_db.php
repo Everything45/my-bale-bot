@@ -22,8 +22,11 @@ function redisExec(array $command): ?array {
     $res = curl_exec($ch);
     if ($res === false) {
         error_log('[Redis] curl failed: ' . curl_error($ch) . ' | cmd=' . ($command[0] ?? '?'));
+        curl_close($ch);
         return null;
     }
+    curl_close($ch);
+
     $json = json_decode($res, true);
     if (!is_array($json)) {
         error_log('[Redis] invalid JSON: ' . substr($res, 0, 300));
@@ -61,6 +64,17 @@ function redisGet(string $key): ?string {
 
 function redisDel(string $key): void {
     redisExec(['DEL', $key]);
+}
+
+/** افزایش اتمیک؛ مقدار جدید را برمی‌گرداند */
+function redisIncrBy(string $key, int $n): int {
+    return (int)(redisResult(redisExec(['INCRBY', $key, (string)$n])) ?? 0);
+}
+
+/** قفل کوتاه‌مدت (SET NX EX). اگر قفل گرفته شد true برمی‌گرداند. */
+function redisAcquireLock(string $key, int $ttl): bool {
+    $res = redisResult(redisExec(['SET', $key, '1', 'NX', 'EX', (string)$ttl]));
+    return $res === 'OK';
 }
 
 function redisHSet(string $key, string $field, string $value): bool {
@@ -228,16 +242,20 @@ function getSponsorText(): string {
 
 /* ───────────────── سیستم ختم (فاز ۲) ───────────────── */
 
+const USER_STATE_TTL = 1800; // ۳۰ دقیقه
+
 function setUserState(string $userId, string $state, array $data = []): void {
-    redisSet("user_state:{$userId}", $state);
-    if (!empty($data)) redisSet("user_state_data:{$userId}", json_encode($data, JSON_UNESCAPED_UNICODE));
+    redisSet("user_state:{$userId}", $state, USER_STATE_TTL);
+    if (!empty($data)) {
+        redisSet("user_state_data:{$userId}", json_encode($data, JSON_UNESCAPED_UNICODE), USER_STATE_TTL);
+    }
 }
 
 function getUserState(string $userId): ?string { return redisGet("user_state:{$userId}"); }
 
 function getUserStateData(string $userId): array {
     $raw = redisGet("user_state_data:{$userId}");
-    return $raw ? json_decode($raw, true) ?? [] : [];
+    return $raw ? (json_decode($raw, true) ?? []) : [];
 }
 
 function clearUserState(string $userId): void {
@@ -245,36 +263,48 @@ function clearUserState(string $userId): void {
     redisDel("user_state_data:{$userId}");
 }
 
+/**
+ * ختم را می‌سازد. فعال‌سازی روی کانال (channel_active_khatm) بعد از
+ * ارسال موفق پست انجام می‌شود (setChannelActiveKhatm).
+ */
 function createKhatm(array $data): string {
     $id = uniqid('khatm_');
     $data['id'] = $id;
-    $data['total_done'] = 0;
+    unset($data['total_done']);
     redisSet("khatm:{$id}", json_encode($data, JSON_UNESCAPED_UNICODE));
-    redisSet("channel_active_khatm:{$data['channel_id']}", $id);
     return $id;
 }
 
 function getKhatm(string $id): ?array {
     $raw = redisGet("khatm:{$id}");
-    return $raw ? json_decode($raw, true) : null;
+    if (!$raw) return null;
+    $khatm = json_decode($raw, true);
+    if (!is_array($khatm)) return null;
+    // مجموع در کلید جدا و اتمیک نگهداری می‌شود
+    $khatm['total_done'] = (int)(redisGet("khatm_total:{$id}") ?? 0);
+    return $khatm;
 }
 
 function updateKhatm(string $id, array $data): void {
+    unset($data['total_done']); // مجموع فقط با INCRBY تغییر می‌کند
     redisSet("khatm:{$id}", json_encode($data, JSON_UNESCAPED_UNICODE));
 }
 
-function updateKhatmTotal(string $id, int $amount): void {
-    $khatm = getKhatm($id);
-    if ($khatm) {
-        $khatm['total_done'] = ($khatm['total_done'] ?? 0) + $amount;
-        updateKhatm($id, $khatm);
-    }
+function deleteKhatm(string $id): void {
+    redisDel("khatm:{$id}");
+    redisDel("khatm_total:{$id}");
+}
+
+function setChannelActiveKhatm($channelId, string $khatmId): void {
+    redisSet("channel_active_khatm:{$channelId}", $khatmId);
+}
+
+function updateKhatmTotal(string $id, int $amount): int {
+    return redisIncrBy("khatm_total:{$id}", $amount);
 }
 
 function addKhatmContribution(string $khatmId, string $userId, int $amount): void {
     if ($amount === 0) return;
-    $key = "khatm_contrib:{$khatmId}:{$userId}";
-    $current = (int)(redisGet($key) ?? 0);
-    redisSet($key, (string)($current + $amount));
+    redisIncrBy("khatm_contrib:{$khatmId}:{$userId}", $amount);
     updateKhatmTotal($khatmId, $amount);
 }

@@ -17,8 +17,11 @@ function apiPost(string $method, array $payload): ?array {
     $res = curl_exec($ch);
     if ($res === false) {
         error_log('[BaleAPI] curl failed: ' . curl_error($ch) . ' | method=' . $method);
+        curl_close($ch);
         return null;
     }
+    curl_close($ch);
+
     $decoded = json_decode($res, true);
     if (!is_array($decoded)) {
         error_log('[BaleAPI] invalid JSON from ' . $method . ': ' . substr($res, 0, 300));
