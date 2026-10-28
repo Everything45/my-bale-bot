@@ -3,36 +3,38 @@
 declare(strict_types=1);
 
 function finishRequest(): void {
-    if (!headers_sent()) {
-        http_response_code(200);
-    }
+    if (!headers_sent()) { http_response_code(200); }
     echo 'OK';
     exit;
 }
 
 function isBotOwner($userId): bool {
-    if (!$userId || BOT_OWNER_ID === '') {
-        return false;
-    }
+    if (!$userId || BOT_OWNER_ID === '') return false;
     return (string)$userId === (string)BOT_OWNER_ID;
 }
 
 function getBotId(): ?string {
     static $cached = null;
-    if ($cached !== null) {
-        return $cached;
-    }
+    if ($cached !== null) return $cached;
     $stored = redisGet('bot_self_id');
-    if ($stored !== null && $stored !== '') {
-        return $cached = $stored;
-    }
+    if ($stored !== null && $stored !== '') return $cached = $stored;
     $res = apiPost('getMe', []);
-    if ($res === null || empty($res['ok']) || empty($res['result']['id'])) {
-        return null;
-    }
+    if ($res === null || empty($res['ok']) || empty($res['result']['id'])) return null;
     $id = (string)$res['result']['id'];
     redisSet('bot_self_id', $id, 86400);
     return $cached = $id;
+}
+
+function getBotUsername(): ?string {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    $stored = redisGet('bot_self_username');
+    if ($stored !== null && $stored !== '') return $cached = $stored;
+    $res = apiPost('getMe', []);
+    if ($res === null || empty($res['ok']) || empty($res['result']['username'])) return null;
+    $username = (string)$res['result']['username'];
+    redisSet('bot_self_username', $username, 86400);
+    return $cached = $username;
 }
 
 function parseCommand(string $text): array {
@@ -47,124 +49,60 @@ function parseCommand(string $text): array {
 
 function checkBotIsAdminInChannel(string $channelRef): array {
     $channelRef = trim($channelRef);
-    if ($channelRef === '') {
-        return ['ok' => false, 'error' => 'نام کانال خالی است.'];
-    }
+    if ($channelRef === '') return ['ok' => false, 'error' => 'نام کانال خالی است.'];
     $ref = $channelRef;
-    if ($ref[0] !== '@' && !preg_match('/^-?\d+$/', $ref)) {
-        $ref = '@' . $ref;
-    }
+    if ($ref[0] !== '@' && !preg_match('/^-?\d+$/', $ref)) $ref = '@' . $ref;
     $chatRes = apiPost('getChat', ['chat_id' => $ref]);
-    if ($chatRes === null || empty($chatRes['ok'])) {
-        return ['ok' => false, 'error' => 'کانال پیدا نشد یا ربات دسترسی ندارد.'];
-    }
+    if ($chatRes === null || empty($chatRes['ok'])) return ['ok' => false, 'error' => 'کانال پیدا نشد یا ربات دسترسی ندارد.'];
     $realId = (string)$chatRes['result']['id'];
-    $title = $chatRes['result']['title'] ?? 'بدون نام';
-    $username = isset($chatRes['result']['username']) ? '@' . $chatRes['result']['username'] : '';
-
     $botId = getBotId();
-    if ($botId === null) {
-        return ['ok' => false, 'error' => 'شناسایی ربات ناموفق بود.'];
-    }
-    $memberRes = apiPost('getChatMember', [
-        'chat_id' => $realId,
-        'user_id' => $botId,
-    ]);
-    if ($memberRes === null || empty($memberRes['ok'])) {
-        return ['ok' => false, 'error' => 'بررسی وضعیت ربات در کانال ناموفق بود.'];
-    }
+    if ($botId === null) return ['ok' => false, 'error' => 'شناسایی ربات ناموفق بود.'];
+    $memberRes = apiPost('getChatMember', ['chat_id' => $realId, 'user_id' => $botId]);
+    if ($memberRes === null || empty($memberRes['ok'])) return ['ok' => false, 'error' => 'بررسی وضعیت ربات ناموفق بود.'];
     $status = $memberRes['result']['status'] ?? '';
-    if (!in_array($status, ['administrator', 'creator'], true)) {
-        return ['ok' => false, 'error' => 'ربات در این کانال ادمین نیست.'];
-    }
-    return [
-        'ok' => true,
-        'real_id' => $realId,
-        'title' => $title,
-        'username' => $username,
-    ];
+    if (!in_array($status, ['administrator', 'creator'], true)) return ['ok' => false, 'error' => 'ربات ادمین نیست.'];
+    return ['ok' => true, 'real_id' => $realId, 'title' => $chatRes['result']['title'] ?? 'بدون نام'];
 }
 
 function checkSingleChannelMembership(string $channelRef, $userId): ?bool {
-    $res = apiPost('getChatMember', [
-        'chat_id' => $channelRef,
-        'user_id' => $userId,
-    ]);
-    if ($res === null) {
-        error_log('[ForceJoin] getChatMember null for channel=' . $channelRef . ' user=' . $userId);
-        return null;
-    }
-    if (empty($res['ok'])) {
-        $desc = $res['description'] ?? 'unknown';
-        error_log('[ForceJoin] getChatMember error for channel=' . $channelRef . ' user=' . $userId . ' desc=' . $desc);
-        return null;
-    }
+    $res = apiPost('getChatMember', ['chat_id' => $channelRef, 'user_id' => $userId]);
+    if ($res === null || empty($res['ok'])) return null;
     $status = $res['result']['status'] ?? 'left';
-    $isMemberField = $res['result']['is_member'] ?? null;
-
-    if ($status === 'restricted') {
-        return (bool)$isMemberField;
-    }
-
+    if ($status === 'restricted') return (bool)($res['result']['is_member'] ?? false);
     return in_array($status, ['creator', 'administrator', 'member'], true);
 }
 
 function checkUserForceJoin($userId, bool $reset = false): array {
-    if (isBotOwner($userId)) {
-        return ['ok' => true, 'missing' => []];
-    }
+    if (isBotOwner($userId)) return ['ok' => true, 'missing' => []];
     $assigned = assignRandomForceChannels($userId, $reset);
-    if (empty($assigned)) {
-        return ['ok' => true, 'missing' => []];
-    }
+    if (empty($assigned)) return ['ok' => true, 'missing' => []];
     $missing = [];
     foreach ($assigned as $ch) {
         $result = checkSingleChannelMembership($ch, $userId);
-        if ($result === null) {
-            error_log('[ForceJoin] Skipping channel=' . $ch . ' for user=' . $userId . ' due to API error');
-            $missing[] = $ch;
-            continue;
-        }
-        if ($result === false) {
-            $missing[] = $ch;
-        }
+        if ($result === null || $result === false) $missing[] = $ch;
     }
-    return [
-        'ok' => empty($missing),
-        'missing' => $missing,
-    ];
+    return ['ok' => empty($missing), 'missing' => $missing];
 }
 
 function sendForceJoinPrompt($chatId, array $missingChannels): void {
-    $msg = "⚠️ عضویت اجباری\n\n"
-         . "برای استفاده از ربات، اول تو کانال‌های زیر عضو شوید و «عضو شدم» رو بزنید.\n\n";
+    $msg = "⚠️ عضویت اجباری\n\nبرای استفاده از ربات، اول تو کانال‌های زیر عضو شوید و «عضو شدم» رو بزنید.\n\n";
     $inlineKeyboard = [];
-
     foreach ($missingChannels as $index => $ch) {
         $num = $index + 1;
         $cleanUser = ltrim($ch, '@');
         $msg .= "کانال " . $num . ": " . $ch . "\n";
         if (!preg_match('/^-?\d+$/', $ch)) {
-            $inlineKeyboard[] = [
-                ['text' => "📢 ورود به کانال " . $num . " (" . $ch . ")", 'url' => "https://ble.ir/" . $cleanUser]
-            ];
+            $inlineKeyboard[] = [['text' => "📢 ورود به کانال " . $num, 'url' => "https://ble.ir/" . $cleanUser]];
         }
     }
-
-    $inlineKeyboard[] = [
-        ['text' => '✅ عضو شدم، بررسی کن', 'callback_data' => 'check_force_join']
-    ];
-
+    $inlineKeyboard[] = [['text' => '✅ عضو شدم، بررسی کن', 'callback_data' => 'check_force_join']];
     sendMessageWithKeyboard($chatId, $msg, ['inline_keyboard' => $inlineKeyboard]);
 }
 
 /* ───────────────── منو و متن‌ها ───────────────── */
 
 function sendStartMenu($chatId): void {
-    $text = "👋 به ربات آنفالویاب خوش آمدید!\n\n"
-          . "لحظه‌ای می‌فهمید چه اعضایی از کانالتون خارج می‌شن.\n\n"
-          . "از دکمه‌های پایین استفاده کنید 👇";
-
+    $text = "👋 به ربات آنفالویاب خوش آمدید!\n\nلحظه‌ای می‌فهمید چه اعضایی از کانالتون خارج می‌شن.\n\nاز دکمه‌های پایین استفاده کنید 👇";
     $keyboard = [
         'keyboard' => [
             [['text' => '➕ اتصال کانال'], ['text' => '📋 کانال‌های من']],
@@ -173,333 +111,152 @@ function sendStartMenu($chatId): void {
         ],
         'resize_keyboard' => true
     ];
-
     sendMessageWithKeyboard($chatId, $text, $keyboard);
 }
 
 function getHelpText(): string {
-    return "📖 راهنمای استفاده\n"
-         . "━━━━━━━━━━━━━━━━━━\n\n"
+    return "📖 راهنمای استفاده\n━━━━━━━━━━━━━━━━━━\n\n"
          . "1️⃣ ربات رو تو کانالتون ادمین کنید (با دسترسی مدیریت اعضا)\n\n"
-         . "2️⃣ کانال رو وصل کنید:\n"
-         . "/add نام یا آیدی کانال\n\n"
-         . "مثال:\n"
-         . "/add mynews\n"
-         . "/add @mynews\n"
-         . "/add -1001234567890\n\n"
-         . "━━━━━━━━━━━━━━━━━━\n"
-         . "🛠 دستورات\n\n"
-         . "/my — لیست کانال‌ها\n"
-         . "/status — وضعیت ربات\n"
-         . "/history نام‌کانال — آخرین خروج‌ها\n"
-         . "/remove نام‌کانال — قطع اتصال\n"
-         . "/bug متن — گزارش مشکل\n"
-         . "/start — منوی اصلی";
+         . "2️⃣ کانال رو وصل کنید:\n/add نام یا آیدی کانال\n\n"
+         . "━━━━━━━━━━━━━━━━━━\n🛠 دستورات\n\n"
+         . "/my — لیست کانال‌ها\n/status — وضعیت ربات\n/history نام‌کانال — آخرین خروج‌ها\n/remove نام‌کانال — قطع اتصال\n/bug متن — گزارش مشکل\n/start — منوی اصلی";
 }
 
 function getAdminHelpText(): string {
-    return "👑 پنل مدیریت (مخصوص مالک)\n"
-         . "━━━━━━━━━━━━━━━━━━\n\n"
-         . "📊 مشاهده\n"
-         . "/zk9xch — کل کانال‌ها\n"
-         . "/zk9xfl — استخر عضویت اجباری\n"
-         . "/zk9xst [آیدی] — دیباگ\n\n"
-         . "⚙️ تنظیمات\n"
-         . "/zk9xfa کانال — افزودن به استخر\n"
-         . "/zk9xfd کانال — حذف از استخر\n"
-         . "/zk9xsp متن — تنظیم اسپانسر\n\n"
-         . "━━━━━━━━━━━━━━━━━━\n"
-         . "⚠️ این دستورات رو جایی منتشر نکنید.";
+    return "👑 پنل مدیریت (مخصوص مالک)\n━━━━━━━━━━━━━━━━━━\n\n"
+         . "📊 مشاهده\n/zk9xch — کل کانال‌ها\n/zk9xfl — استخر عضویت اجباری\n/zk9xst [آیدی] — دیباگ\n\n"
+         . "⚙️ تنظیمات\n/zk9xfa کانال — افزودن به استخر\n/zk9xfd کانال — حذف از استخر\n/zk9xsp متن — تنظیم اسپانسر\n\n"
+         . "━━━━━━━━━━━━━━━━━━\n⚠️ این دستورات رو جایی منتشر نکنید.";
 }
-
-/* ───────────────── کانال‌ها ───────────────── */
 
 function resolveChannelId(string $target): ?string {
     $target = trim($target);
-    if ($target === '') {
-        return null;
-    }
-    if (preg_match('/^-?\d+$/', $target)) {
-        return $target;
-    }
-    if ($target[0] !== '@') {
-        $target = '@' . $target;
-    }
+    if ($target === '') return null;
+    if (preg_match('/^-?\d+$/', $target)) return $target;
+    if ($target[0] !== '@') $target = '@' . $target;
     $chatRes = apiPost('getChat', ['chat_id' => $target]);
-    if ($chatRes === null || empty($chatRes['ok'])) {
-        return null;
-    }
+    if ($chatRes === null || empty($chatRes['ok'])) return null;
     return (string)$chatRes['result']['id'];
 }
 
+/* ───────────────── مدیریت کانال ───────────────── */
+
 function handleConnect($chatId, $userId, string $arg): void {
-    if ($arg === '') {
-        sendPlainText($chatId, "❌ نام کانال رو بعد از دستور add بنویسید.\n\nمثال:\n/add mynews");
-        return;
-    }
-
+    if ($arg === '') { sendPlainText($chatId, "❌ نام کانال رو بعد از دستور add بنویسید.\n\nمثال:\n/add mynews"); return; }
     $target = trim($arg);
-    if ($target[0] !== '@' && !preg_match('/^-?\d+$/', $target)) {
-        $target = '@' . $target;
-    }
-
+    if ($target[0] !== '@' && !preg_match('/^-?\d+$/', $target)) $target = '@' . $target;
     $chatRes = apiPost('getChat', ['chat_id' => $target]);
-    if ($chatRes === null || empty($chatRes['ok'])) {
-        sendPlainText($chatId, "❌ کانال پیدا نشد.\n\nچک کنید:\n"
-            . "1. ربات تو کانال ادمین باشه\n"
-            . "2. نام کانال درست باشه\n"
-            . "3. بعد از add یک فاصله و نام کانال");
-        return;
-    }
-
+    if ($chatRes === null || empty($chatRes['ok'])) { sendPlainText($chatId, "❌ کانال پیدا نشد.\n\nچک کنید ربات ادمین باشه."); return; }
     $chatObj = $chatRes['result'];
     $realChannelId = (string)$chatObj['id'];
     $title = $chatObj['title'] ?? 'بدون نام';
     $username = isset($chatObj['username']) ? '@' . $chatObj['username'] : '';
-
     $existingOwner = getChannelOwner($realChannelId);
     if ($existingOwner !== null && (string)$existingOwner !== (string)$userId && !isBotOwner($userId)) {
-        sendPlainText($chatId, "⛔ این کانال قبلاً توسط کاربر دیگری ثبت شده.");
-        return;
+        sendPlainText($chatId, "⛔ این کانال قبلاً توسط کاربر دیگری ثبت شده."); return;
     }
-
     $botId = getBotId();
     if ($botId !== null) {
-        $botMember = apiPost('getChatMember', [
-            'chat_id' => $realChannelId,
-            'user_id' => $botId,
-        ]);
+        $botMember = apiPost('getChatMember', ['chat_id' => $realChannelId, 'user_id' => $botId]);
         $botStatus = $botMember['result']['status'] ?? '';
         if (!in_array($botStatus, ['administrator', 'creator'], true)) {
-            sendPlainText($chatId, "⚠️ اول ربات رو تو کانال ادمین کنید، بعد دوباره add رو بزنید.");
-            return;
+            sendPlainText($chatId, "⚠️ اول ربات رو تو کانال ادمین کنید، بعد دوباره add رو بزنید."); return;
         }
     }
-
-    $memberRes = apiPost('getChatMember', [
-        'chat_id' => $realChannelId,
-        'user_id' => $userId,
-    ]);
-
-    if ($memberRes === null || empty($memberRes['ok'])) {
-        sendPlainText($chatId, "❌ ربات دسترسی بررسی اعضا نداره. لطفاً ادمینش کنید.");
-        return;
-    }
-
+    $memberRes = apiPost('getChatMember', ['chat_id' => $realChannelId, 'user_id' => $userId]);
+    if ($memberRes === null || empty($memberRes['ok'])) { sendPlainText($chatId, "❌ ربات دسترسی بررسی اعضا نداره."); return; }
     $status = $memberRes['result']['status'] ?? '';
     if (!in_array($status, ['creator', 'administrator'], true) && !isBotOwner($userId)) {
-        sendPlainText($chatId, "⛔ شما تو این کانال ادمین یا سازنده نیستید.");
-        return;
+        sendPlainText($chatId, "⛔ شما تو این کانال ادمین یا سازنده نیستید."); return;
     }
-
     setChannelOwner($realChannelId, $userId, $title, $username);
     sendPlainText($chatId, "✅ کانال «" . $title . "» متصل شد.\n\nاز الان گزارش خروج اعضا براتون میاد.");
 }
 
 function handleMyList($chatId, $userId): void {
     $channels = getOwnerChannels($userId);
-    if (empty($channels)) {
-        sendPlainText($chatId, "📭 هنوز کانالی ثبت نکردید.\n\n"
-            . "برای اتصال:\n"
-            . "1. ربات رو ادمین کنید\n"
-            . "2. /add نام‌کانال رو بفرستید");
-        return;
-    }
-
+    if (empty($channels)) { sendPlainText($chatId, "📭 هنوز کانالی ثبت نکردید.\n\nبرای اتصال:\n1. ربات رو ادمین کنید\n2. /add نام‌کانال"); return; }
     $msg = "📋 کانال‌های شما:\n\n";
     foreach ($channels as $chId => $info) {
-        $title = $info['title'] ?: 'بدون نام';
-        $un = $info['username'] ? " (" . $info['username'] . ")" : '';
-        $msg .= "🔹 " . $title . $un . "\n"
-              . "آیدی: " . $chId . "\n"
-              . "ثبت: " . $info['updated_at'] . "\n\n";
+        $msg .= "🔹 " . ($info['title'] ?: 'بدون نام') . ($info['username'] ? " ({$info['username']})" : '') . "\nآیدی: {$chId}\n\n";
     }
     sendPlainText($chatId, $msg);
 }
 
 function handleRemoveChannel($chatId, $userId, string $arg): void {
-    if ($arg === '') {
-        sendPlainText($chatId, "❌ نام کانال رو بعد از remove بنویسید.\n\nمثال:\n/remove mynews");
-        return;
-    }
-
+    if ($arg === '') { sendPlainText($chatId, "❌ نام کانال رو بعد از remove بنویسید."); return; }
     $realId = resolveChannelId($arg);
-    if ($realId === null) {
-        sendPlainText($chatId, "❌ کانال پیدا نشد. از آیدی عددی استفاده کنید.");
-        return;
-    }
-
+    if ($realId === null) { sendPlainText($chatId, "❌ کانال پیدا نشد."); return; }
     $owner = getChannelOwner($realId);
-    if ($owner === null) {
-        sendPlainText($chatId, "❌ این کانال تو ربات ثبت نشده.");
-        return;
-    }
-
-    if ((string)$owner !== (string)$userId && !isBotOwner($userId)) {
-        sendPlainText($chatId, "⛔ شما مالک این کانال نیستید.");
-        return;
-    }
-
+    if ($owner === null) { sendPlainText($chatId, "❌ این کانال تو ربات ثبت نشده."); return; }
+    if ((string)$owner !== (string)$userId && !isBotOwner($userId)) { sendPlainText($chatId, "⛔ شما مالک این کانال نیستید."); return; }
     removeChannel($realId);
-    sendPlainText($chatId, "🗑 کانال حذف شد. دیگه گزارشی ارسال نمی‌شه.");
+    sendPlainText($chatId, "🗑 کانال حذف شد.");
 }
 
 function handleHistory($chatId, $userId, string $arg): void {
-    if ($arg === '') {
-        sendPlainText($chatId, "❌ نام کانال رو بعد از history بنویسید.\n\nمثال:\n/history mynews");
-        return;
-    }
-
+    if ($arg === '') { sendPlainText($chatId, "❌ نام کانال رو بعد از history بنویسید."); return; }
     $realId = resolveChannelId($arg);
-    if ($realId === null) {
-        sendPlainText($chatId, "❌ کانال پیدا نشد.");
-        return;
-    }
-
+    if ($realId === null) { sendPlainText($chatId, "❌ کانال پیدا نشد."); return; }
     $owner = getChannelOwner($realId);
-    if ($owner === null || ((string)$owner !== (string)$userId && !isBotOwner($userId))) {
-        sendPlainText($chatId, "⛔ دسترسی ندارید یا کانال ثبت نشده.");
-        return;
-    }
-
+    if ($owner === null || ((string)$owner !== (string)$userId && !isBotOwner($userId))) { sendPlainText($chatId, "⛔ دسترسی ندارید."); return; }
     $history = getLeaveHistory($realId);
-    if (empty($history)) {
-        sendPlainText($chatId, "📭 هنوز خروجی ثبت نشده.");
-        return;
-    }
-
-    $msg = "📊 آخرین خروج‌ها از «" . $realId . "»:\n\n";
-    $slice = array_slice($history, 0, 15);
-    foreach ($slice as $idx => $item) {
+    if (empty($history)) { sendPlainText($chatId, "📭 هنوز خروجی ثبت نشده."); return; }
+    $msg = "📊 آخرین خروج‌ها از «{$realId}»:\n\n";
+    foreach (array_slice($history, 0, 15) as $idx => $item) {
         $num = $idx + 1;
-        $name = $item['name'] ?? 'نامشخص';
-        $uid = $item['user_id'] ?? '';
-        $un = !empty($item['username']) ? "@" . $item['username'] : 'بدون یوزرنیم';
-        $time = $item['time'] ?? '';
-        $msg .= $num . ". " . $name . " (" . $uid . " | " . $un . ")\n"
-              . "🕒 " . $time . "\n\n";
+        $msg .= "{$num}. {$item['name']} ({$item['user_id']})\n🕒 {$item['time']}\n\n";
     }
     sendPlainText($chatId, $msg);
 }
 
-/* ───────────────── قابلیت‌های ویژه (فاز ۲) ───────────────── */
-
-function getZekrList(): array {
-    return [
-        'salavat'   => 'صلوات',
-        'istighfar' => 'استغفرالله',
-        'tahlil'    => 'لا اله الا الله',
-        'tasbih'    => 'سبحان الله',
-        'hamd'      => 'الحمدلله',
-        'takbir'    => 'الله اکبر',
-    ];
-}
+/* ───────────────── قابلیت‌های ویژه (ذکرشمار و ختم) ───────────────── */
 
 function sendOrEditMenu($chatId, ?int $messageId, string $text, array $inlineKeyboard): void {
     if ($messageId !== null) {
-        $res = apiPost('editMessageText', [
-            'chat_id' => $chatId,
-            'message_id' => $messageId,
-            'text' => $text,
-            'parse_mode' => 'Markdown',
-            'reply_markup' => $inlineKeyboard,
-        ]);
-        if ($res !== null && !empty($res['ok'])) {
-            return;
-        }
-        $res = apiPost('editMessageText', [
-            'chat_id' => $chatId,
-            'message_id' => $messageId,
-            'text' => $text,
-            'reply_markup' => $inlineKeyboard,
-        ]);
-        if ($res !== null && !empty($res['ok'])) {
-            return;
-        }
+        $res = apiPost('editMessageText', ['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $text, 'parse_mode' => 'Markdown', 'reply_markup' => $inlineKeyboard]);
+        if ($res !== null && !empty($res['ok'])) return;
+        $res = apiPost('editMessageText', ['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $text, 'reply_markup' => $inlineKeyboard]);
+        if ($res !== null && !empty($res['ok'])) return;
     }
     sendMessageWithKeyboard($chatId, $text, $inlineKeyboard);
 }
 
 function sendSpecialMenu($chatId, ?int $messageId = null): void {
-    $text = "✨ قابلیت‌های ویژه\n\n"
-          . "از بین گزینه‌های زیر انتخاب کنید:";
-    $inlineKeyboard = [
-        [['text' => '📿 ذکرشمار', 'callback_data' => 'zekr_menu']],
-    ];
-    sendOrEditMenu($chatId, $messageId, $text, ['inline_keyboard' => $inlineKeyboard]);
+    $inlineKeyboard = [[['text' => '📿 ذکرشمار و ختم', 'callback_data' => 'zekr_menu']]];
+    sendOrEditMenu($chatId, $messageId, "✨ قابلیت‌های ویژه\n\nاز بین گزینه‌های زیر انتخاب کنید:", ['inline_keyboard' => $inlineKeyboard]);
 }
 
 function sendZekrMenu($chatId, $userId, ?int $messageId = null): void {
-    $text = "📿 ذکرشمار\n\n"
-          . "یک ذکر انتخاب کنید:";
-    $zekrs = getZekrList();
-    $rows = [];
-    $current = [];
+    $rows = [
+        [['text' => '📿 ذکر شخصی', 'callback_data' => 'zekr_personal']],
+    ];
+    // اگه کاربر کانال داره، دکمه ساخت ختم نشون داده بشه
+    if (!empty(getOwnerChannels($userId))) {
+        $rows[] = [['text' => '➕ ساخت ختم جدید', 'callback_data' => 'khatm_create']];
+    }
+    $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'special_menu']];
+    
+    sendOrEditMenu($chatId, $messageId, "📿 بخش ذکرشمار\n\nیک گزینه را انتخاب کنید:", ['inline_keyboard' => $rows]);
+}
+
+function sendPersonalZekrMenu($chatId, ?int $messageId = null): void {
+    $zekrs = ['salavat' => 'صلوات', 'istighfar' => 'استغفرالله', 'tahlil' => 'لا اله الا الله', 'tasbih' => 'سبحان الله', 'hamd' => 'الحمدلله', 'takbir' => 'الله اکبر'];
+    $rows = []; $current = [];
     foreach ($zekrs as $key => $label) {
         $current[] = ['text' => $label, 'callback_data' => 'zekr_show:' . $key];
-        if (count($current) === 2) {
-            $rows[] = $current;
-            $current = [];
-        }
+        if (count($current) === 2) { $rows[] = $current; $current = []; }
     }
-    if (!empty($current)) {
-        $rows[] = $current;
-    }
-    $rows[] = [['text' => '📊 آمار من', 'callback_data' => 'zekr_stats']];
-    $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'special_menu']];
+    if (!empty($current)) $rows[] = $current;
+    $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_menu']];
 
-    sendOrEditMenu($chatId, $messageId, $text, ['inline_keyboard' => $rows]);
+    sendOrEditMenu($chatId, $messageId, "📿 ذکر شخصی\n\nیک ذکر انتخاب کنید:", ['inline_keyboard' => $rows]);
 }
 
-function buildZekrPageText($userId, string $zekrKey): string {
+function buildPersonalZekrPage($userId, string $zekrKey): string {
     $count = zekrGet((string)$userId, $zekrKey);
-    $label = getZekrList()[$zekrKey] ?? $zekrKey;
-    return "📿 {$label}\n\n"
-         . "تعداد: {$count}\n\n"
-         . "با دکمه‌های زیر بشمار:";
-}
-
-function buildZekrPageKeyboard(string $zekrKey): array {
-    return [
-        'inline_keyboard' => [
-            [
-                ['text' => '➕ ۱', 'callback_data' => "zekr_add:{$zekrKey}:1"],
-                ['text' => '➕ ۱۰', 'callback_data' => "zekr_add:{$zekrKey}:10"],
-                ['text' => '➕ ۱۰۰', 'callback_data' => "zekr_add:{$zekrKey}:100"],
-            ],
-            [
-                ['text' => '🔄 ریست', 'callback_data' => "zekr_reset:{$zekrKey}"],
-            ],
-            [
-                ['text' => '🔙 بازگشت', 'callback_data' => 'zekr_menu'],
-            ],
-        ],
-    ];
-}
-
-function sendZekrPage($chatId, $userId, string $zekrKey, ?int $messageId = null): void {
-    if (!isset(getZekrList()[$zekrKey])) {
-        return;
-    }
-    $text = buildZekrPageText($userId, $zekrKey);
-    $keyboard = buildZekrPageKeyboard($zekrKey);
-    sendOrEditMenu($chatId, $messageId, $text, $keyboard);
-}
-
-function sendZekrStats($chatId, $userId, ?int $messageId = null): void {
-    $total = zekrGetTotal((string)$userId);
-    $text = "📊 آمار اذکار شما\n\n"
-          . "📿 مجموع کل: {$total}\n\n";
-    foreach (getZekrList() as $key => $label) {
-        $count = zekrGet((string)$userId, $key);
-        $text .= "• {$label}: {$count}\n";
-    }
-    $inlineKeyboard = [
-        'inline_keyboard' => [
-            [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_menu']],
-        ],
-    ];
-    sendOrEditMenu($chatId, $messageId, $text, $inlineKeyboard);
+    $labels = ['salavat' => 'صلوات', 'istighfar' => 'استغفرالله', 'tahlil' => 'لا اله الا الله', 'tasbih' => 'سبحان الله', 'hamd' => 'الحمدلله', 'takbir' => 'الله اکبر'];
+    return "📿 " . ($labels[$zekrKey] ?? $zekrKey) . "\n\nتعداد: {$count}\n\nبا دکمه‌های زیر بشمار:";
 }
 
 function handleZekrCallback(array $cb): void {
@@ -510,74 +267,232 @@ function handleZekrCallback(array $cb): void {
     $userId = $cb['from']['id'] ?? null;
     $userIdStr = (string)$userId;
 
-    if (!$chatId || !$userId) {
-        answerCallbackQuery($cbId);
-        return;
-    }
+    if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
 
-    if ($data === 'special_menu') {
+    if ($data === 'special_menu') { answerCallbackQuery($cbId); sendSpecialMenu($chatId, $messageId); return; }
+    if ($data === 'zekr_menu') { answerCallbackQuery($cbId); sendZekrMenu($chatId, $userIdStr, $messageId); return; }
+    if ($data === 'zekr_personal') { answerCallbackQuery($cbId); sendPersonalZekrMenu($chatId, $messageId); return; }
+    
+    if ($data === 'khatm_create') {
         answerCallbackQuery($cbId);
-        sendSpecialMenu($chatId, $messageId);
-        return;
-    }
-
-    if ($data === 'zekr_menu') {
-        answerCallbackQuery($cbId);
-        sendZekrMenu($chatId, $userIdStr, $messageId);
-        return;
-    }
-
-    if ($data === 'zekr_stats') {
-        answerCallbackQuery($cbId);
-        sendZekrStats($chatId, $userIdStr, $messageId);
+        if (empty(getOwnerChannels($userId))) {
+            sendPlainText($chatId, "❌ برای ساخت ختم، ابتدا باید یک کانال به ربات متصل کنید.");
+            return;
+        }
+        setUserState($userIdStr, 'khatm_title');
+        sendPlainText($chatId, "➕ ساخت ختم جدید\n\nعنوان ختم را وارد کنید (مثلاً: صلوات):");
         return;
     }
 
     if (strpos($data, 'zekr_show:') === 0) {
         $zekrKey = substr($data, 10);
-        if (isset(getZekrList()[$zekrKey])) {
-            answerCallbackQuery($cbId);
-            sendZekrPage($chatId, $userIdStr, $zekrKey, $messageId);
-        } else {
-            answerCallbackQuery($cbId, '❌ ذکر نامعتبر است.', true);
-        }
+        $text = buildPersonalZekrPage($userIdStr, $zekrKey);
+        $keyboard = ['inline_keyboard' => [
+            [['text' => '➕ ۱', 'callback_data' => "zekr_add:{$zekrKey}:1"], ['text' => '➕ ۱۰', 'callback_data' => "zekr_add:{$zekrKey}:10"], ['text' => '➕ ۱۰۰', 'callback_data' => "zekr_add:{$zekrKey}:100"]],
+            [['text' => '🔄 ریست', 'callback_data' => "zekr_reset:{$zekrKey}"]],
+            [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_personal']],
+        ]];
+        answerCallbackQuery($cbId);
+        sendOrEditMenu($chatId, $messageId, $text, $keyboard);
         return;
     }
 
     if (strpos($data, 'zekr_add:') === 0) {
         $parts = explode(':', $data);
         if (count($parts) === 3) {
-            $zekrKey = $parts[1];
-            $amount = (int)$parts[2];
-            if (isset(getZekrList()[$zekrKey]) && $amount > 0 && $amount <= 1000) {
-                $newCount = zekrAdd($userIdStr, $zekrKey, $amount);
-                answerCallbackQuery($cbId, "✅ +{$amount} | مجموع: {$newCount}");
-                sendZekrPage($chatId, $userIdStr, $zekrKey, $messageId);
-            } else {
-                answerCallbackQuery($cbId, '❌ درخواست نامعتبر است.', true);
-            }
-        } else {
-            answerCallbackQuery($cbId);
+            $zekrKey = $parts[1]; $amount = (int)$parts[2];
+            $newCount = zekrAdd($userIdStr, $zekrKey, $amount);
+            answerCallbackQuery($cbId, "✅ +{$amount} | مجموع: {$newCount}");
+            $text = buildPersonalZekrPage($userIdStr, $zekrKey);
+            $keyboard = ['inline_keyboard' => [
+                [['text' => '➕ ۱', 'callback_data' => "zekr_add:{$zekrKey}:1"], ['text' => '➕ ۱۰', 'callback_data' => "zekr_add:{$zekrKey}:10"], ['text' => '➕ ۱۰۰', 'callback_data' => "zekr_add:{$zekrKey}:100"]],
+                [['text' => '🔄 ریست', 'callback_data' => "zekr_reset:{$zekrKey}"]],
+                [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_personal']],
+            ]];
+            sendOrEditMenu($chatId, $messageId, $text, $keyboard);
         }
         return;
     }
 
     if (strpos($data, 'zekr_reset:') === 0) {
         $zekrKey = substr($data, 11);
-        if (isset(getZekrList()[$zekrKey])) {
-            zekrReset($userIdStr, $zekrKey);
-            answerCallbackQuery($cbId, '🔄 شمارش ریست شد.');
-            sendZekrPage($chatId, $userIdStr, $zekrKey, $messageId);
-        } else {
-            answerCallbackQuery($cbId, '❌ ذکر نامعتبر است.', true);
-        }
+        zekrReset($userIdStr, $zekrKey);
+        answerCallbackQuery($cbId, '🔄 شمارش ریست شد.');
+        $text = buildPersonalZekrPage($userIdStr, $zekrKey);
+        $keyboard = ['inline_keyboard' => [
+            [['text' => '➕ ۱', 'callback_data' => "zekr_add:{$zekrKey}:1"], ['text' => '➕ ۱۰', 'callback_data' => "zekr_add:{$zekrKey}:10"], ['text' => '➕ ۱۰۰', 'callback_data' => "zekr_add:{$zekrKey}:100"]],
+            [['text' => '🔄 ریست', 'callback_data' => "zekr_reset:{$zekrKey}"]],
+            [['text' => '🔙 بازگشت', 'callback_data' => 'zekr_personal']],
+        ]];
+        sendOrEditMenu($chatId, $messageId, $text, $keyboard);
         return;
     }
 
     answerCallbackQuery($cbId);
 }
 
-/* ───────────────── Callback ───────────────── */
+/* ───────────────── فرآیند ساخت ختم (State Machine) ───────────────── */
+
+function handleKhatmState($chatId, $userId, string $state, string $text, array $message): void {
+    $userIdStr = (string)$userId;
+    $data = getUserStateData($userIdStr);
+
+    if ($state === 'khatm_title') {
+        $data['title'] = $text;
+        setUserState($userIdStr, 'khatm_desc', $data);
+        sendPlainText($chatId, "✅ عنوان ثبت شد.\n\nحالا توضیحات ختم را وارد کنید:");
+        return;
+    }
+
+    if ($state === 'khatm_desc') {
+        $data['desc'] = $text;
+        setUserState($userIdStr, 'khatm_image', $data);
+        sendPlainText($chatId, "✅ توضیحات ثبت شد.\n\nحالا عکس ختم را ارسال کنید (یا کلمه «ندارد» را بفرستید):");
+        return;
+    }
+
+    if ($state === 'khatm_image') {
+        if ($text === 'ندارد') {
+            $data['image'] = '';
+        } elseif (isset($message['photo']) && is_array($message['photo'])) {
+            $photo = end($message['photo']);
+            $data['image'] = $photo['file_id'];
+        } else {
+            sendPlainText($chatId, "❌ لطفاً یک عکس ارسال کنید یا کلمه «ندارد» را بفرستید.");
+            return;
+        }
+        setUserState($userIdStr, 'khatm_target', $data);
+        sendPlainText($chatId, "✅ عکس ثبت شد.\n\nحالا تعداد کل ذکر را وارد کنید (مثلاً 1000):");
+        return;
+    }
+
+    if ($state === 'khatm_target') {
+        $target = (int)preg_replace('/[^0-9]/', '', $text);
+        if ($target <= 0) {
+            sendPlainText($chatId, "❌ لطفاً یک عدد معتبر وارد کنید.");
+            return;
+        }
+        $data['target'] = $target;
+        setUserState($userIdStr, 'khatm_buttons', $data);
+        sendPlainText($chatId, "✅ تعداد کل ثبت شد.\n\nحالا ۳ دکمه شمارش را با کاما جدا کنید (مثلاً: 1,3,7):");
+        return;
+    }
+
+    if ($state === 'khatm_buttons') {
+        $parts = array_map('trim', explode(',', $text));
+        if (count($parts) !== 3 || !ctype_digit(implode('', $parts))) {
+            sendPlainText($chatId, "❌ لطفاً دقیقاً ۳ عدد را با کاما وارد کنید (مثلاً: 1,3,7).");
+            return;
+        }
+        $data['buttons'] = $parts;
+        
+        // گرفتن کانال‌های کاربر
+        $channels = getOwnerChannels($userId);
+        $rows = [];
+        foreach ($channels as $chId => $info) {
+            $rows[] = [['text' => $info['title'] ?: $chId, 'callback_data' => "khatm_channel:{$chId}"]];
+        }
+        $rows[] = [['text' => '❌ انصراف', 'callback_data' => 'khatm_cancel']];
+
+        setUserState($userIdStr, 'khatm_channel', $data);
+        sendMessageWithKeyboard($chatId, "✅ دکمه‌ها ثبت شد.\n\nحالا کانالی که می‌خواهید ختم در آن ارسال شود را انتخاب کنید:", ['inline_keyboard' => $rows]);
+        return;
+    }
+}
+
+function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
+    $userIdStr = (string)$userId;
+    $data = getUserStateData($userIdStr);
+    $data['channel_id'] = $chId;
+    
+    $khatmId = createKhatm($data);
+    clearUserState($userIdStr);
+
+    $khatm = getKhatm($khatmId);
+    $botUsername = getBotUsername();
+    $deepLink = "https://ble.ir/{$botUsername}?start={$khatmId}";
+    
+    $caption = "📿 **ختم جدید**\n\n"
+             . "عنوان ختم: " . $khatm['title'] . "\n"
+             . "توضیحات: " . $khatm['desc'] . "\n"
+             . "تعداد کل: " . $khatm['target'] . "\n\n"
+             . "برای شرکت در ختم و شمارش، روی دکمه زیر بزنید:";
+
+    $keyboard = [
+        'inline_keyboard' => [
+            [['text' => '📿 شرکت در ختم', 'url' => $deepLink]]
+        ]
+    ];
+
+    // ارسال به کانال
+    $payload = [
+        'chat_id' => $chId,
+        'caption' => $caption,
+        'parse_mode' => 'Markdown',
+        'reply_markup' => $keyboard,
+    ];
+
+    if (!empty($khatm['image'])) {
+        $payload['photo'] = $khatm['image'];
+        apiPost('sendPhoto', $payload);
+    } else {
+        $payload['text'] = $caption;
+        unset($payload['caption']);
+        apiPost('sendMessage', $payload);
+    }
+
+    sendPlainText($chatId, "✅ ختم با موفقیت در کانال ارسال شد!\n\nاعضا با کلیک روی دکمه «شرکت در ختم» به ربات منتقل شده و کیبورد شمارش برایشان فعال می‌شود.");
+}
+
+/* ───────────────── کیبورد و صفحه شمارش ختم ───────────────── */
+
+function sendKhatmUI($chatId, $userId, string $khatmId, string $alertMsg = ''): void {
+    $khatm = getKhatm($khatmId);
+    if (!$khatm) { sendPlainText($chatId, "❌ ختم پیدا نشد."); return; }
+
+    $userIdStr = (string)$userId;
+    $userContrib = getKhatmContribution($khatmId, $userIdStr);
+    $totalDone = $khatm['total_done'] ?? 0;
+    $remaining = max(0, $khatm['target'] - $totalDone);
+
+    // ساخت متن
+    $caption = "عنوان ختم : " . $khatm['title'] . "\n"
+             . "توضیحات ختم : " . $khatm['desc'];
+             
+    if ($alertMsg !== '') {
+        $caption = "{$alertMsg}\n\n" . $caption;
+    }
+
+    // ساخت کیبورد پایین (Reply Keyboard)
+    $b = $khatm['buttons'];
+    $keyboard = [
+        'keyboard' => [
+            [['text' => (string)$b[0]]],
+            [['text' => (string)$b[1]]],
+            [['text' => (string)$b[2]]],
+            [['text' => "مجموع: {$totalDone}"], ['text' => "مانده: {$remaining}"]],
+            [['text' => '🌟 محل نمایش کانال اسپانسر']],
+            [['text' => '🔙 بازگشت به منوی اصلی']]
+        ],
+        'resize_keyboard' => true
+    ];
+
+    // ارسال عکس + متن + کیبورد
+    if (!empty($khatm['image'])) {
+        $res = apiPost('sendPhoto', [
+            'chat_id' => $chatId,
+            'photo' => $khatm['image'],
+            'caption' => $caption,
+            'reply_markup' => $keyboard,
+        ]);
+        if ($res !== null && !empty($res['ok'])) return;
+    }
+    
+    // اگر عکس نبود یا ارسال عکس خطا داد:
+    sendMessageWithKeyboard($chatId, $caption, $keyboard);
+}
+
+/* ───────────────── Callback ها ───────────────── */
 
 function handleCallbackQuery(array $cb): void {
     $cbId = $cb['id'] ?? null;
@@ -585,23 +500,30 @@ function handleCallbackQuery(array $cb): void {
     $chatId = $cb['message']['chat']['id'] ?? null;
     $userId = $cb['from']['id'] ?? null;
 
-    if (!$chatId || !$userId) {
-        answerCallbackQuery($cbId);
-        return;
-    }
+    if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
 
     if ($data === 'check_force_join') {
         $check = checkUserForceJoin($userId, false);
-        if ($check['ok']) {
-            answerCallbackQuery($cbId, '✅ عضویت تایید شد.', false);
-            sendStartMenu($chatId);
-        } else {
-            answerCallbackQuery($cbId, '❌ هنوز عضو همه‌ی کانال‌ها نشدید.', true);
-        }
+        if ($check['ok']) { answerCallbackQuery($cbId, '✅ عضویت تایید شد.', false); sendStartMenu($chatId); }
+        else { answerCallbackQuery($cbId, '❌ هنوز عضو همه‌ی کانال‌ها نشدید.', true); }
         return;
     }
 
-    // سازگاری با منوهای قدیمی (Inline)
+    if ($data === 'khatm_cancel') {
+        clearUserState((string)$userId);
+        answerCallbackQuery($cbId, 'لغو شد.');
+        sendStartMenu($chatId);
+        return;
+    }
+
+    if (strpos($data, 'khatm_channel:') === 0) {
+        $chId = substr($data, 14);
+        answerCallbackQuery($cbId, 'در حال ارسال...');
+        sendKhatmChannelPreview($chatId, $userId, $chId);
+        return;
+    }
+
+    // بررسی عضویت اجباری برای بقیه
     if ($data !== 'menu_bug') {
         $check = checkUserForceJoin($userId, false);
         if (!$check['ok']) {
@@ -611,36 +533,12 @@ function handleCallbackQuery(array $cb): void {
         }
     }
 
-    // قابلیت‌های ویژه و ذکرشمار (فاز ۲)
     if ($data === 'special_menu' || strpos($data, 'zekr_') === 0) {
         handleZekrCallback($cb);
         return;
     }
 
     answerCallbackQuery($cbId);
-
-    switch ($data) {
-        case 'menu_connect':
-            sendPlainText($chatId, "➕ اتصال کانال\n\n"
-                . "1. ربات رو تو کانال ادمین کنید\n"
-                . "2. این رو بفرستید:\n/add mynews");
-            break;
-        case 'menu_mylist':
-            handleMyList($chatId, $userId);
-            break;
-        case 'menu_help':
-            sendPlainText($chatId, getHelpText());
-            break;
-        case 'menu_sponsor':
-            sendPlainText($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText());
-            break;
-        case 'menu_bug':
-            sendPlainText($chatId, "🐞 گزارش باگ\n\n"
-                . "مشکل رو این‌طوری بفرستید:\n\n"
-                . "/bug متن مشکل\n\n"
-                . "مستقیم برای مدیر ربات میاد.");
-            break;
-    }
 }
 
 /* ───────────────── Router متن ───────────────── */
@@ -651,303 +549,167 @@ function handleTextMessage(array $message): void {
     $userId = $message['from']['id'] ?? null;
     $text = trim($message['text'] ?? '');
 
-    if (!$chatId || !$userId || $text === '') {
+    if (!$chatId || !$userId || $text === '') return;
+    if ($chatType !== 'private' && strpos($text, '/') !== 0) return;
+
+    $userIdStr = (string)$userId;
+
+    /* ── بررسی State Machine (ساخت ختم) ── */
+    $userState = getUserState($userIdStr);
+    if ($userState !== null && strpos($userState, 'khatm_') === 0) {
+        handleKhatmState($chatId, $userId, $userState, $text, $message);
         return;
     }
 
-    if ($chatType !== 'private' && strpos($text, '/') !== 0) {
-        return;
-    }
-
-    /* ── دکمه‌های Reply Keyboard ── */
+    /* ── بررسی کیبوردهای پایین (Reply Keyboard) ── */
     $replyButtonMap = [
-        '➕ اتصال کانال'        => 'connect',
-        '➕ اتصال کانال جدید'    => 'connect',
-        '📋 کانال‌های من'       => 'mylist',
-        '📖 راهنما'            => 'help',
-        '📖 راهنمای استفاده'    => 'help',
-        '🌟 اسپانسر'           => 'sponsor',
-        '🌟 اسپانسر ما'         => 'sponsor',
-        '🐞 گزارش باگ'         => 'bug',
-        '✨ قابلیت‌های ویژه'    => 'special',
+        '➕ اتصال کانال' => 'connect', '➕ اتصال کانال جدید' => 'connect',
+        '📋 کانال‌های من' => 'mylist', '📖 راهنما' => 'help',
+        '📖 راهنمای استفاده' => 'help', '🌟 اسپانسر' => 'sponsor',
+        '🌟 اسپانسر ما' => 'sponsor', '🐞 گزارش باگ' => 'bug',
+        '✨ قابلیت‌های ویژه' => 'special',
+        '🔙 بازگشت به منوی اصلی' => 'back_to_main'
     ];
+
+    // بررسی دکمه‌های کیبورد ختم
+    $activeKhatmId = getUserActiveKhatm($userIdStr);
+    if ($activeKhatmId && !isset($replyButtonMap[$text])) {
+        $khatm = getKhatm($activeKhatmId);
+        if ($khatm) {
+            $b = $khatm['buttons'];
+            if (in_array($text, $b, true)) {
+                // شمارش ذکر
+                addKhatmContribution($activeKhatmId, $userIdStr, (int)$text);
+                sendKhatmUI($chatId, $userId, $activeKhatmId, "✅ {$text} ذکر ثبت شد.");
+                return;
+            } elseif (strpos($text, 'محل نمایش کانال اسپانسر') !== false) {
+                sendPlainText($chatId, "🌟 اسپانسر:\n\n" . getSponsorText());
+                return;
+            } elseif (strpos($text, 'مجموع:') === 0 || strpos($text, 'مانده:') === 0) {
+                // اگر روی مجموع/مانده کلیک کرد، دوباره کیبورد را فرستاده تا همگام شود
+                sendKhatmUI($chatId, $userId, $activeKhatmId, "📊 آمار لحظه‌ای ختم:");
+                return;
+            }
+        } else {
+            delUserActiveKhatm($userIdStr);
+        }
+    }
 
     if (isset($replyButtonMap[$text])) {
         $forceCheck = checkUserForceJoin($userId, false);
-        if (!$forceCheck['ok']) {
-            sendForceJoinPrompt($chatId, $forceCheck['missing']);
-            return;
+        if (!$forceCheck['ok']) { sendForceJoinPrompt($chatId, $forceCheck['missing']); return; }
+
+        if ($replyButtonMap[$text] === 'back_to_main') {
+            delUserActiveKhatm($userIdStr);
+            sendStartMenu($chatId); return;
         }
 
         switch ($replyButtonMap[$text]) {
-            case 'connect':
-                sendPlainText($chatId, "➕ اتصال کانال\n\n"
-                    . "1. ربات رو تو کانال ادمین کنید\n"
-                    . "2. این رو بفرستید:\n/add mynews");
-                break;
-            case 'mylist':
-                handleMyList($chatId, $userId);
-                break;
-            case 'help':
-                sendPlainText($chatId, getHelpText());
-                break;
-            case 'sponsor':
-                sendPlainText($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText());
-                break;
-            case 'bug':
-                sendPlainText($chatId, "🐞 گزارش باگ\n\n"
-                    . "مشکل رو این‌طوری بفرستید:\n\n"
-                    . "/bug متن مشکل\n\n"
-                    . "مستقیم برای مدیر ربات میاد.");
-                break;
-            case 'special':
-                sendSpecialMenu($chatId);
-                break;
+            case 'connect': sendPlainText($chatId, "➕ اتصال کانال\n\n1. ربات رو تو کانال ادمین کنید\n2. این رو بفرستید:\n/add mynews"); break;
+            case 'mylist': handleMyList($chatId, $userId); break;
+            case 'help': sendPlainText($chatId, getHelpText()); break;
+            case 'sponsor': sendPlainText($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
+            case 'bug': sendPlainText($chatId, "🐞 گزارش باگ\n\nمشکل رو این‌طوری بفرستید:\n\n/bug متن مشکل"); break;
+            case 'special': sendSpecialMenu($chatId); break;
         }
         return;
     }
 
     /* ── دستورات متنی ── */
     [$cmd, $arg] = parseCommand($text);
-    if ($cmd === null) {
-        return;
-    }
+    if ($cmd === null) return;
 
     $resetForce = ($cmd === 'start');
     $skipForceCheck = in_array($cmd, ['help', 'bug', 'status'], true);
     if (!$skipForceCheck) {
         $forceCheck = checkUserForceJoin($userId, $resetForce);
-        if (!$forceCheck['ok']) {
-            sendForceJoinPrompt($chatId, $forceCheck['missing']);
-            return;
-        }
+        if (!$forceCheck['ok']) { sendForceJoinPrompt($chatId, $forceCheck['missing']); return; }
     }
 
     switch ($cmd) {
-
-        /* ════════ عمومی ════════ */
-
         case 'start':
+            if (strpos($arg, 'khatm_') === 0) {
+                $khatmId = $arg;
+                $khatm = getKhatm($khatmId);
+                if ($khatm) {
+                    setUserActiveKhatm($userIdStr, $khatmId);
+                    sendKhatmUI($chatId, $userId, $khatmId);
+                    return;
+                }
+            }
+            delUserActiveKhatm($userIdStr);
             sendStartMenu($chatId);
             break;
 
-        case 'help':
-            sendPlainText($chatId, getHelpText());
-            break;
-
+        case 'help': sendPlainText($chatId, getHelpText()); break;
         case 'status':
-            $msg = "🤖 ربات آنفالویاب: آنلاین\n"
-                 . "🕒 " . date('Y-m-d H:i:s');
-            if (isBotOwner($userId)) {
-                $dbOk = (REDIS_URL !== '' && REDIS_TOKEN !== '') ? '✅ متصل' : '❌ قطع';
-                $msg .= "\n🗄 Redis: " . $dbOk
-                      . "\n📦 استخر عضویت اجباری: " . count(getForceChannelsPool());
-            }
+            $msg = "🤖 ربات آنفالویاب: آنلاین\n🕒 " . date('Y-m-d H:i:s');
+            if (isBotOwner($userId)) $msg .= "\n🗄 Redis: ✅\n📦 استخر: " . count(getForceChannelsPool());
             sendPlainText($chatId, $msg);
             break;
-
-        /* ════════ مدیریت کانال ════════ */
-
         case 'add':
-        case 'connect':
-            handleConnect($chatId, $userId, (string)$arg);
-            break;
-
-        case 'my':
-            handleMyList($chatId, $userId);
-            break;
-
-        case 'remove':
-            handleRemoveChannel($chatId, $userId, (string)$arg);
-            break;
-
-        case 'history':
-            handleHistory($chatId, $userId, (string)$arg);
-            break;
-
-        /* ════════ گزارش باگ ════════ */
+        case 'connect': handleConnect($chatId, $userId, (string)$arg); break;
+        case 'my': handleMyList($chatId, $userId); break;
+        case 'remove': handleRemoveChannel($chatId, $userId, (string)$arg); break;
+        case 'history': handleHistory($chatId, $userId, (string)$arg); break;
 
         case 'bug':
-            if ($arg === '') {
-                sendPlainText($chatId, "❌ متن مشکل رو بعد از bug بنویسید.\n\nمثال:\n/bug ربات گزارش نمی‌ده");
-                return;
-            }
-            if (BOT_OWNER_ID === '') {
-                sendPlainText($chatId, "❌ دریافت گزارش فعلاً غیرفعاله.");
-                return;
-            }
+            if ($arg === '') { sendPlainText($chatId, "❌ متن مشکل رو بعد از bug بنویسید."); return; }
+            if (BOT_OWNER_ID === '') { sendPlainText($chatId, "❌ دریافت گزارش غیرفعاله."); return; }
             $senderName = trim(($message['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? '')) ?: 'بدون نام';
             $senderUsername = $message['from']['username'] ?? '';
-            $bugText = "🐞 گزارش باگ\n\n"
-                . "👤 " . $senderName . "\n"
-                . "🔖 " . ($senderUsername !== '' ? '@' . $senderUsername : 'ندارد') . "\n"
-                . "🔢 " . $userId . "\n"
-                . "━━━━━━━━━━━━━━\n"
-                . $arg;
+            $bugText = "🐞 گزارش باگ\n\n👤 " . $senderName . "\n🔖 " . ($senderUsername !== '' ? '@' . $senderUsername : 'ندارد') . "\n🔢 " . $userId . "\n━━━━━━━━━━━━━━\n" . $arg;
             sendPlainText(BOT_OWNER_ID, $bugText);
-            sendPlainText($chatId, "✅ گزارش ارسال شد. ممنون از همکاریتون!");
+            sendPlainText($chatId, "✅ گزارش ارسال شد.");
             break;
 
-        /* ════════ پنل مدیریت (فقط zk9x*) ════════ */
-
+        /* ── پنل مدیریت ── */
         case 'zk9xad':
             if (!isBotOwner($userId)) return;
-            sendPlainText($chatId, getAdminHelpText());
-            break;
-
+            sendPlainText($chatId, getAdminHelpText()); break;
         case 'zk9xch':
             if (!isBotOwner($userId)) return;
             $all = getAllChannelsMap();
-            if (empty($all)) {
-                sendPlainText($chatId, "📭 هیچ کانالی ثبت نشده.");
-                return;
-            }
+            if (empty($all)) { sendPlainText($chatId, "📭 خالی است."); return; }
             $msg = "👑 کل کانال‌ها (" . count($all) . "):\n\n";
-            foreach ($all as $chId => $info) {
-                $title = $info['title'] ?: 'بدون نام';
-                $un = $info['username'] ? " (" . $info['username'] . ")" : '';
-                $owner = $info['owner_id'] ?? 'نامشخص';
-                $msg .= "🔹 " . $title . $un . "\n"
-                      . "آیدی: " . $chId . "\n"
-                      . "مالک: " . $owner . "\n\n";
-            }
+            foreach ($all as $chId => $info) $msg .= "🔹 " . ($info['title'] ?: 'بدون نام') . "\nآیدی: {$chId}\nمالک: {$info['owner_id']}\n\n";
             sendPlainText($chatId, $msg);
             break;
-
         case 'zk9xfa':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') {
-                sendPlainText($chatId, "❌ مثال: /zk9xfa mychannel");
-                return;
-            }
+            if ($arg === '') { sendPlainText($chatId, "❌ مثال: /zk9xfa mychannel"); return; }
             $check = checkBotIsAdminInChannel($arg);
-            if (!$check['ok']) {
-                sendPlainText($chatId, "❌ " . $check['error'] . "\n\nاول ربات رو ادمین کنید.");
-                return;
-            }
-            if (!addForceChannelToPool($arg)) {
-                sendPlainText($chatId, "❌ ذخیره نشد. دوباره تلاش کنید.");
-                return;
-            }
-            $displayTitle = $check['title'] ?: $arg;
-            sendPlainText($chatId, "✅ کانال «" . $displayTitle . "» به استخر اضافه شد.");
+            if (!$check['ok'] || !addForceChannelToPool($arg)) { sendPlainText($chatId, "❌ خطا. اول ربات رو ادمین کنید."); return; }
+            sendPlainText($chatId, "✅ اضافه شد.");
             break;
-
         case 'zk9xfd':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') {
-                sendPlainText($chatId, "❌ مثال: /zk9xfd mychannel");
-                return;
-            }
-            if (removeForceChannelFromPool($arg)) {
-                sendPlainText($chatId, "🗑 کانال از استخر حذف شد.");
-            } else {
-                sendPlainText($chatId, "❌ این کانال تو استخر پیدا نشد.");
-            }
+            if ($arg === '') { sendPlainText($chatId, "❌ مثال: /zk9xfd mychannel"); return; }
+            sendPlainText($chatId, removeForceChannelFromPool($arg) ? "🗑 حذف شد." : "❌ پیدا نشد.");
             break;
-
         case 'zk9xfl':
             if (!isBotOwner($userId)) return;
             $pool = getForceChannelsPool();
-            if (empty($pool)) {
-                sendPlainText($chatId, "📭 استخر خالیه.");
-                return;
-            }
-            $msg = "📢 استخر عضویت اجباری (" . count($pool) . "):\n\n";
-            foreach ($pool as $idx => $ch) {
-                $num = $idx + 1;
-                $msg .= $num . ". " . $ch . "\n";
-            }
+            if (empty($pool)) { sendPlainText($chatId, "📭 استخر خالیه."); return; }
+            $msg = "📢 استخر (" . count($pool) . "):\n\n";
+            foreach ($pool as $idx => $ch) $msg .= ($idx + 1) . ". " . $ch . "\n";
             sendPlainText($chatId, $msg);
             break;
-
         case 'zk9xst':
             if (!isBotOwner($userId)) return;
             $pool = getForceChannelsPool();
-            $msg = "🔍 دیباگ عضویت اجباری\n"
-                 . "━━━━━━━━━━━━━━━━━━\n\n"
-                 . "📦 استخر: " . count($pool) . " کانال\n\n";
-
-            if (empty($pool)) {
-                $msg .= "⚠️ استخر خالیه. هیچ کاربری عضویت اجباری نمی‌بینه.\n"
-                      . "با /zk9xfa کانال اضافه کنید.\n";
-            } else {
-                foreach ($pool as $idx => $ch) {
-                    $num = $idx + 1;
-                    $adminCheck = checkBotIsAdminInChannel($ch);
-                    $msg .= $num . ". " . $ch . "\n";
-                    if ($adminCheck['ok']) {
-                        $msg .= "   ✅ ربات ادمین است\n"
-                              . "   نام: " . ($adminCheck['title'] ?: 'بدون نام') . "\n"
-                              . "   آیدی: " . $adminCheck['real_id'] . "\n";
-                    } else {
-                        $msg .= "   ❌ " . $adminCheck['error'] . "\n"
-                              . "   این کانال عملاً غیرفعال است.\n";
-                    }
-                    $msg .= "\n";
-                }
-            }
-
-            $targetUserId = null;
-            if ($arg !== '') {
-                $targetUserId = preg_replace('/[^0-9-]/', '', $arg);
-                if ($targetUserId === '') {
-                    $targetUserId = null;
-                }
-            }
-
-            if ($targetUserId !== null) {
-                $msg .= "━━━━━━━━━━━━━━━━━━\n"
-                      . "👤 تست برای کاربر: " . $targetUserId . "\n\n";
-
-                if (isBotOwner($targetUserId)) {
-                    $msg .= "⚠️ این کاربر مالک ربات است و معاف است.\n";
-                } else {
-                    $assignmentKey = "user_force_channels:" . $targetUserId;
-                    $assignedRaw = redisGet($assignmentKey);
-                    $assigned = $assignedRaw ? json_decode($assignedRaw, true) : [];
-
-                    if (empty($assigned) || !is_array($assigned)) {
-                        $msg .= "هیچ کانالی به این کاربر اختصاص نیافته.\n"
-                              . "با زدن /start در حساب کاربر، اختصاص انجام می‌شه.\n";
-                    } else {
-                        $msg .= "کانال‌های اختصاص‌یافته:\n";
-                        $missing = [];
-                        foreach ($assigned as $ch) {
-                            $memberResult = checkSingleChannelMembership($ch, $targetUserId);
-                            if ($memberResult === true) {
-                                $msg .= "  " . $ch . " : ✅ عضو است\n";
-                            } elseif ($memberResult === false) {
-                                $msg .= "  " . $ch . " : ❌ عضو نیست\n";
-                                $missing[] = $ch;
-                            } else {
-                                $msg .= "  " . $ch . " : ⚠️ خطا در بررسی\n";
-                            }
-                        }
-                        $msg .= "\n";
-                        if (empty($missing)) {
-                            $msg .= "نتیجه: کاربر نباید عضویت اجباری ببینه.\n";
-                        } else {
-                            $msg .= "نتیجه: کاربر باید عضویت اجباری ببینه (" . count($missing) . " کانال کم).\n";
-                        }
-                    }
-                }
-            } else {
-                $msg .= "━━━━━━━━━━━━━━━━━━\n"
-                      . "برای تست کاربر خاص، آیدی عددی رو بعد از دستور بنویسید:\n\n"
-                      . "/zk9xst 123456789";
+            $msg = "🔍 دیباگ (" . count($pool) . " کانال):\n\n";
+            foreach ($pool as $idx => $ch) {
+                $c = checkBotIsAdminInChannel($ch);
+                $msg .= ($idx + 1) . ". " . $ch . ($c['ok'] ? " ✅" : " ❌ ({$c['error']})") . "\n";
             }
             sendPlainText($chatId, $msg);
             break;
-
         case 'zk9xsp':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') {
-                sendPlainText($chatId, "❌ متن اسپانسر رو بعد از دستور بنویسید.\n\nمثال:\n/zk9xsp کانال ما: mychannel");
-                return;
-            }
+            if ($arg === '') { sendPlainText($chatId, "❌ متن اسپانسر رو بنویسید."); return; }
             setSponsorText($arg);
-            sendPlainText($chatId, "✅ متن اسپانسر بروزرسانی شد.");
+            sendPlainText($chatId, "✅ اسپانسر بروزرسانی شد.");
             break;
     }
 }
@@ -955,43 +717,28 @@ function handleTextMessage(array $message): void {
 /* ───────────────── رویداد خروج عضو ───────────────── */
 
 function processMemberLeft(array $chat, array $user, ?array $actor = null): void {
-    if (!empty($user['is_bot'])) {
-        return;
-    }
-
+    if (!empty($user['is_bot'])) return;
     $channelId = $chat['id'] ?? null;
-    if (!$channelId) {
-        return;
-    }
-
+    if (!$channelId) return;
     $channelIdStr = (string)$channelId;
     $ownerId = getChannelOwner($channelIdStr);
-    if (!$ownerId) {
-        return;
-    }
+    if (!$ownerId) return;
 
     $channelTitle = $chat['title'] ?? 'کانال بدون نام';
     $channelUsername = isset($chat['username']) ? '@' . $chat['username'] : '';
-
     $userId = $user['id'] ?? 'نامشخص';
     $firstName = $user['first_name'] ?? '';
     $lastName = $user['last_name'] ?? '';
     $fullName = trim($firstName . ' ' . $lastName) ?: 'بدون نام';
     $username = $user['username'] ?? '';
-
     $timeStr = date('Y/m/d - H:i:s');
 
-    saveLeaveHistory($channelIdStr, [
-        'user_id' => $userId,
-        'name' => $fullName,
-        'username' => $username,
-        'time' => $timeStr,
-    ]);
+    saveLeaveHistory($channelIdStr, ['user_id' => $userId, 'name' => $fullName, 'username' => $username, 'time' => $timeStr]);
 
     $usernameLine = $username !== '' ? "@" . $username : 'ندارد';
     $channelLine = $channelUsername !== '' ? $channelTitle . " (" . $channelUsername . ")" : $channelTitle;
-
     $actionType = 'خروج از کانال';
+
     if ($actor !== null && isset($actor['id']) && (string)$actor['id'] !== (string)$userId) {
         $actorName = trim(($actor['first_name'] ?? '') . ' ' . ($actor['last_name'] ?? '')) ?: 'ادمین';
         $actionType = "حذف توسط " . $actorName;
