@@ -55,11 +55,6 @@ if (isset($update['callback_query']) && is_array($update['callback_query'])) {
     finishRequest();
 }
 
-if (isset($update['poll_answer']) && is_array($update['poll_answer'])) {
-    handlePollAnswer($update['poll_answer']);
-    finishRequest();
-}
-
 if (isset($update['chat_member']) && is_array($update['chat_member'])) {
     handleChatMemberUpdate($update['chat_member']);
     finishRequest();
