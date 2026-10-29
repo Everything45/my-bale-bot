@@ -62,6 +62,14 @@ function redisGet(string $key): ?string {
     return (string)$res;
 }
 
+/** چند کلید با یک درخواست. در صورت خطا null برمی‌گرداند (تا با خطای شبکه چیزی پاک نشود). */
+function redisMGet(array $keys): ?array {
+    $keys = array_values($keys);
+    if (empty($keys)) return [];
+    $res = redisResult(redisExec(array_merge(['MGET'], $keys)));
+    return is_array($res) ? $res : null;
+}
+
 function redisDel(string $key): void {
     redisExec(['DEL', $key]);
 }
@@ -105,6 +113,11 @@ function redisHGetAll(string $key): array {
     return $pairs;
 }
 
+function redisHKeys(string $key): array {
+    $res = redisResult(redisExec(['HKEYS', $key]));
+    return is_array($res) ? array_values($res) : [];
+}
+
 function redisHDel(string $key, string $field): void {
     redisExec(['HDEL', $key, $field]);
 }
@@ -132,12 +145,40 @@ function redisSMembers(string $key): array {
     return is_array($res) ? array_values($res) : [];
 }
 
-/* ───────────────── کانال‌ها ───────────────── */
+/** پیدا کردن کلیدها با الگو (SCAN) */
+function redisScanKeys(string $pattern, int $maxIterations = 100): array {
+    $cursor = '0';
+    $found = [];
+    $i = 0;
+    do {
+        $res = redisResult(redisExec(['SCAN', $cursor, 'MATCH', $pattern, 'COUNT', '500']));
+        if (!is_array($res) || count($res) < 2) break;
+        $cursor = (string)$res[0];
+        if (is_array($res[1])) {
+            foreach ($res[1] as $k) $found[(string)$k] = true;
+        }
+        $i++;
+    } while ($cursor !== '0' && $i < $maxIterations);
+    return array_keys($found);
+}
 
-function setChannelOwner($channelId, $ownerId, string $title = '', string $username = ''): void {
+/* ───────────────── کانال‌ها ───────────────── */
+/*
+ * منبع اصلی حقیقت: کلید channel_owner:{id}.
+ * هر ورودی در all_channels_set / all_channels_map که این کلید را نداشته باشد «شبح» است
+ * و هنگام خواندن خودکار پاک می‌شود.
+ */
+
+function setChannelOwner($channelId, $ownerId, string $title = '', string $username = '', string $type = ''): void {
     $channelIdStr = (string)$channelId;
     $ownerIdStr = (string)$ownerId;
-    $info = json_encode(['owner_id' => $ownerIdStr, 'title' => $title, 'username' => $username, 'updated_at' => date('Y-m-d H:i:s')], JSON_UNESCAPED_UNICODE);
+    $info = json_encode([
+        'owner_id' => $ownerIdStr,
+        'title' => $title,
+        'username' => $username,
+        'type' => $type,
+        'updated_at' => date('Y-m-d H:i:s'),
+    ], JSON_UNESCAPED_UNICODE);
     redisSet("channel_owner:{$channelIdStr}", $ownerIdStr);
     redisSet("channel_info:{$channelIdStr}", $info);
     redisSAdd('all_channels_set', $channelIdStr);
@@ -145,45 +186,72 @@ function setChannelOwner($channelId, $ownerId, string $title = '', string $usern
 }
 
 function getChannelOwner($channelId): ?string {
-    return redisGet("channel_owner:" . (string)$channelId);
+    $v = redisGet("channel_owner:" . (string)$channelId);
+    return ($v === null || $v === '') ? null : $v;
+}
+
+function getChannelInfo($channelId): ?array {
+    $id = (string)$channelId;
+    $owner = getChannelOwner($id);
+    if ($owner === null) return null;
+    $raw = redisGet("channel_info:{$id}");
+    $info = $raw !== null ? json_decode($raw, true) : null;
+    if (!is_array($info)) $info = ['title' => '', 'username' => ''];
+    $info['owner_id'] = $owner;
+    return $info;
 }
 
 function getAllChannelsMap(): array {
-    $result = [];
-    $ids = redisSMembers('all_channels_set');
-    foreach ($ids as $chId) {
-        $chIdStr = (string)$chId;
-        $infoStr = redisGet("channel_info:{$chIdStr}");
-        if ($infoStr === null) continue;
-        $decoded = json_decode($infoStr, true);
-        if (is_array($decoded)) $result[$chIdStr] = $decoded;
+    $ids = [];
+    foreach (redisSMembers('all_channels_set') as $id) $ids[(string)$id] = true;
+    foreach (redisHKeys('all_channels_map') as $id) $ids[(string)$id] = true;
+    $ids = array_keys($ids);
+    if (empty($ids)) return [];
+
+    $keys = [];
+    foreach ($ids as $id) {
+        $keys[] = "channel_owner:{$id}";
+        $keys[] = "channel_info:{$id}";
     }
-    $raw = redisHGetAll('all_channels_map');
-    foreach ($raw as $chId => $infoVal) {
-        $chIdStr = (string)$chId;
-        if (isset($result[$chIdStr])) continue;
-        $decoded = is_array($infoVal) ? $infoVal : json_decode((string)$infoVal, true);
-        if (is_array($decoded)) $result[$chIdStr] = $decoded;
+    $vals = redisMGet($keys);
+    if ($vals === null) return []; // خطای Redis: چیزی پاک نکن
+
+    $result = [];
+    $i = 0;
+    foreach ($ids as $id) {
+        $owner = $vals[$i++] ?? null;
+        $infoRaw = $vals[$i++] ?? null;
+        if ($owner === null || $owner === '') {
+            // شبح: مالک ندارد → پاک‌سازی
+            redisSRem('all_channels_set', (string)$id);
+            redisHDel('all_channels_map', (string)$id);
+            redisDel("channel_info:{$id}");
+            continue;
+        }
+        $info = is_string($infoRaw) ? json_decode($infoRaw, true) : null;
+        if (!is_array($info)) $info = ['title' => '', 'username' => ''];
+        $info['owner_id'] = (string)$owner;
+        $result[(string)$id] = $info;
     }
     return $result;
 }
 
 function removeChannel($channelId): bool {
-    $channelIdStr = (string)$channelId;
-    if (getChannelOwner($channelIdStr) === null) return false;
-    redisDel("channel_owner:{$channelIdStr}");
-    redisDel("channel_info:{$channelIdStr}");
-    redisDel("leave_history:{$channelIdStr}");
-    redisHDel('all_channels_map', $channelIdStr);
-    redisSRem('all_channels_set', $channelIdStr);
-    return true;
+    $id = (string)$channelId;
+    $existed = getChannelOwner($id) !== null;
+    redisDel("channel_owner:{$id}");
+    redisDel("channel_info:{$id}");
+    redisDel("leave_history:{$id}");
+    redisDel("channel_active_khatm:{$id}");
+    redisHDel('all_channels_map', $id);
+    redisSRem('all_channels_set', $id);
+    return $existed;
 }
 
 function getOwnerChannels($ownerId): array {
     $ownerIdStr = (string)$ownerId;
-    $map = getAllChannelsMap();
     $result = [];
-    foreach ($map as $chId => $info) {
+    foreach (getAllChannelsMap() as $chId => $info) {
         if ((string)($info['owner_id'] ?? '') === $ownerIdStr) $result[$chId] = $info;
     }
     return $result;
@@ -239,8 +307,8 @@ function assignRandomForceChannels($userId, bool $reset = false): array {
     }
     if (count($pool) <= 2) $selected = $pool;
     else { $keys = array_rand($pool, 2); $selected = [$pool[$keys[0]], $pool[$keys[1]]]; }
-    redisSet($key, json_encode($selected, JSON_UNESCAPED_UNICODE), 86400 * 7);
-    return $selected;
+    redisSet($key, json_encode(array_values($selected), JSON_UNESCAPED_UNICODE), 86400);
+    return array_values($selected);
 }
 
 function setSponsorText(string $text): void { redisSet('bot_sponsor_text', $text); }
@@ -250,22 +318,26 @@ function getSponsorText(): string {
     return ($text !== null && trim($text) !== '') ? $text : "🌟 هنوز اسپانسری ثبت نشده.\nبرای رزرو با مدیر ربات در تماس باشید.";
 }
 
-/* ───────────────── سیستم ختم (فاز ۲) ───────────────── */
+/* ───────────────── وضعیت کاربر ───────────────── */
 
 const USER_STATE_TTL = 1800; // ۳۰ دقیقه
 
+/** وضعیت و داده‌ی آن همیشه با هم بازنویسی می‌شوند (داده‌ی قدیمی باقی نمی‌ماند) */
 function setUserState(string $userId, string $state, array $data = []): void {
     redisSet("user_state:{$userId}", $state, USER_STATE_TTL);
-    if (!empty($data)) {
-        redisSet("user_state_data:{$userId}", json_encode($data, JSON_UNESCAPED_UNICODE), USER_STATE_TTL);
-    }
+    redisSet("user_state_data:{$userId}", json_encode($data, JSON_UNESCAPED_UNICODE), USER_STATE_TTL);
 }
 
-function getUserState(string $userId): ?string { return redisGet("user_state:{$userId}"); }
+function getUserState(string $userId): ?string {
+    $v = redisGet("user_state:{$userId}");
+    return ($v === null || $v === '') ? null : $v;
+}
 
 function getUserStateData(string $userId): array {
     $raw = redisGet("user_state_data:{$userId}");
-    return $raw ? (json_decode($raw, true) ?? []) : [];
+    if ($raw === null || $raw === '') return [];
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
 }
 
 function clearUserState(string $userId): void {
@@ -273,15 +345,15 @@ function clearUserState(string $userId): void {
     redisDel("user_state_data:{$userId}");
 }
 
-/**
- * ختم را می‌سازد. فعال‌سازی روی کانال (channel_active_khatm) بعد از
- * ارسال موفق پست انجام می‌شود (setChannelActiveKhatm).
- */
+/* ───────────────── سیستم ختم ───────────────── */
+
 function createKhatm(array $data): string {
     $id = uniqid('khatm_');
     $data['id'] = $id;
+    $data['created_at'] = date('Y-m-d H:i:s');
     unset($data['total_done']);
     redisSet("khatm:{$id}", json_encode($data, JSON_UNESCAPED_UNICODE));
+    redisSAdd('all_khatms_set', $id);
     return $id;
 }
 
@@ -300,9 +372,62 @@ function updateKhatm(string $id, array $data): void {
     redisSet("khatm:{$id}", json_encode($data, JSON_UNESCAPED_UNICODE));
 }
 
-function deleteKhatm(string $id): void {
-    redisDel("khatm:{$id}");
+/** شناسه‌ی همه‌ی ختم‌ها (هم از ایندکس، هم از SCAN برای ختم‌های قدیمی) */
+function getAllKhatmIds(): array {
+    $ids = [];
+    foreach (redisSMembers('all_khatms_set') as $id) $ids[(string)$id] = true;
+    foreach (redisScanKeys('khatm:khatm_*') as $key) {
+        $ids[substr($key, strlen('khatm:'))] = true;
+    }
+    return array_keys($ids);
+}
+
+/** همه‌ی ختم‌های موجود (ایندکس‌های شبح پاک می‌شوند) */
+function getAllKhatms(): array {
+    $list = [];
+    foreach (getAllKhatmIds() as $id) {
+        $k = getKhatm($id);
+        if ($k === null) {
+            redisSRem('all_khatms_set', $id);
+            continue;
+        }
+        $list[] = $k;
+    }
+    usort($list, static fn($a, $b) => strcmp((string)($b['created_at'] ?? ''), (string)($a['created_at'] ?? '')));
+    return $list;
+}
+
+/** شناسه‌ی همه‌ی کاربرانی که در این ختم شمارش ثبت کرده‌اند */
+function getKhatmContributorIds(string $id): array {
+    $ids = [];
+    foreach (redisSMembers("khatm_users:{$id}") as $u) $ids[(string)$u] = true;
+    $prefix = "khatm_contrib:{$id}:";
+    foreach (redisScanKeys($prefix . '*') as $key) {
+        if (strpos($key, $prefix) === 0) $ids[substr($key, strlen($prefix))] = true;
+    }
+    return array_keys($ids);
+}
+
+/** صفر کردن کامل شمارش‌ها (مجموع + مشارکت تک‌تک کاربران) */
+function resetKhatm(string $id): void {
+    foreach (getKhatmContributorIds($id) as $u) {
+        redisDel("khatm_contrib:{$id}:{$u}");
+    }
+    redisDel("khatm_users:{$id}");
     redisDel("khatm_total:{$id}");
+    redisDel("khatm_edit_lock:{$id}");
+    redisDel("khatm_dirty:{$id}");
+}
+
+function deleteKhatm(string $id): void {
+    $khatm = getKhatm($id);
+    resetKhatm($id);
+    redisDel("khatm:{$id}");
+    redisSRem('all_khatms_set', $id);
+    if ($khatm !== null && !empty($khatm['channel_id'])) {
+        $active = redisGet("channel_active_khatm:{$khatm['channel_id']}");
+        if ($active === $id) redisDel("channel_active_khatm:{$khatm['channel_id']}");
+    }
 }
 
 function setChannelActiveKhatm($channelId, string $khatmId): void {
@@ -321,6 +446,7 @@ function getKhatmUserTotal(string $khatmId, string $userId): int {
 function addKhatmContribution(string $khatmId, string $userId, int $amount): int {
     if ($amount === 0) return getKhatmUserTotal($khatmId, $userId);
     $mine = redisIncrBy("khatm_contrib:{$khatmId}:{$userId}", $amount);
+    redisSAdd("khatm_users:{$khatmId}", $userId);
     updateKhatmTotal($khatmId, $amount);
     return $mine;
 }

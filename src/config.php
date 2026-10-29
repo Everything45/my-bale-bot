@@ -15,5 +15,5 @@ if (BOT_TOKEN === '') {
         http_response_code(500);
     }
     echo 'Error: BOT_TOKEN environment variable is not set.';
-    exit; 
+    exit;
 }

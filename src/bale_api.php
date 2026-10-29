@@ -30,86 +30,81 @@ function apiPost(string $method, array $payload): ?array {
     return $decoded;
 }
 
-function sendWithRetry($chatId, string $text, int $maxRetries = 2): void {
-    if (!$chatId) {
-        return;
+function apiOk(?array $res): bool {
+    return $res !== null && !empty($res['ok']);
+}
+
+/** متن بلند را به تکه‌های کمتر از حد مجاز تقسیم می‌کند */
+function splitLongText(string $text, int $limit = 3800): array {
+    if (mb_strlen($text) <= $limit) {
+        return [$text];
     }
-    for ($i = 0; $i < $maxRetries; $i++) {
-        $res = apiPost('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'Markdown',
-        ]);
-        if ($res !== null && !empty($res['ok'])) {
-            return;
+    $chunks = [];
+    $current = '';
+    foreach (preg_split('/\R/u', $text) ?: [] as $line) {
+        if ($current !== '' && mb_strlen($current) + mb_strlen($line) + 1 > $limit) {
+            $chunks[] = $current;
+            $current = '';
         }
-        usleep(200000);
+        if (mb_strlen($line) > $limit) {
+            foreach (mb_str_split($line, $limit) as $part) {
+                if ($current !== '') {
+                    $chunks[] = $current;
+                    $current = '';
+                }
+                $chunks[] = $part;
+            }
+            continue;
+        }
+        $current .= ($current === '' ? '' : "\n") . $line;
     }
-    apiPost('sendMessage', [
-        'chat_id' => $chatId,
-        'text' => $text,
-    ]);
-}
-
-function sendPlainText($chatId, string $text): void {
-    if (!$chatId) {
-        return;
+    if ($current !== '') {
+        $chunks[] = $current;
     }
-    sendWithRetry($chatId, $text);
-}
-
-function sendMessageWithKeyboard($chatId, string $text, ?array $replyMarkup = null): void {
-    if (!$chatId) {
-        return;
-    }
-    $payload = [
-        'chat_id' => $chatId,
-        'text' => $text,
-        'parse_mode' => 'Markdown',
-    ];
-    if ($replyMarkup !== null) {
-        $payload['reply_markup'] = $replyMarkup;
-    }
-
-    $res = apiPost('sendMessage', $payload);
-    if ($res === null || empty($res['ok'])) {
-        unset($payload['parse_mode']);
-        apiPost('sendMessage', $payload);
-    }
+    return $chunks ?: [$text];
 }
 
 /**
- * اگر $messageId داده شود پیام را ویرایش می‌کند، وگرنه (یا اگر ویرایش ممکن نبود) پیام جدید می‌فرستد.
- * شناسه‌ی پیام نهایی را برمی‌گرداند. بدون parse_mode (متن ساده).
+ * ارسال پیام جدید (متن ساده، بدون parse_mode). هیچ پیامی ویرایش نمی‌شود.
+ * شناسه‌ی آخرین پیام ارسال‌شده را برمی‌گرداند.
  */
-function editOrSendMessage($chatId, ?int $messageId, string $text, ?array $replyMarkup = null): ?int {
+function sendMessageWithKeyboard($chatId, string $text, ?array $replyMarkup = null): ?int {
     if (!$chatId) {
         return null;
     }
-    if ($messageId !== null && $messageId > 0) {
-        $payload = ['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $text];
-        if ($replyMarkup !== null) {
+    $chunks = splitLongText($text);
+    $lastId = null;
+    $lastIndex = count($chunks) - 1;
+
+    foreach ($chunks as $i => $chunk) {
+        $payload = ['chat_id' => $chatId, 'text' => $chunk];
+        if ($replyMarkup !== null && $i === $lastIndex) {
             $payload['reply_markup'] = $replyMarkup;
         }
-        $res = apiPost('editMessageText', $payload);
-        if ($res !== null && !empty($res['ok'])) {
-            return $messageId;
+        $res = apiPost('sendMessage', $payload);
+        if (!apiOk($res)) {
+            usleep(200000);
+            $res = apiPost('sendMessage', $payload);
         }
-        // محتوای یکسان = تغییری لازم نیست؛ پیام جدید نفرست
-        $desc = strtolower((string)($res['description'] ?? ''));
-        if (strpos($desc, 'not modified') !== false) {
-            return $messageId;
+        if (apiOk($res) && isset($res['result']['message_id'])) {
+            $lastId = (int)$res['result']['message_id'];
         }
     }
-    $payload = ['chat_id' => $chatId, 'text' => $text];
-    if ($replyMarkup !== null) {
-        $payload['reply_markup'] = $replyMarkup;
+    return $lastId;
+}
+
+function sendPlainText($chatId, string $text): bool {
+    if (!$chatId) {
+        return false;
     }
-    $res = apiPost('sendMessage', $payload);
-    if ($res !== null && !empty($res['ok']) && isset($res['result']['message_id'])) {
-        return (int)$res['result']['message_id'];
+    return sendMessageWithKeyboard($chatId, $text) !== null;
+}
+
+function deleteMessageSafe($chatId, $messageId): bool {
+    if (!$chatId || !$messageId) {
+        return false;
     }
-    return null;
+    return apiOk(apiPost('deleteMessage', ['chat_id' => $chatId, 'message_id' => $messageId]));
 }
 
 function answerCallbackQuery($callbackId, string $text = '', bool $showAlert = false): void {

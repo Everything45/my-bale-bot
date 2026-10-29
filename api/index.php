@@ -13,7 +13,10 @@ if ($input === '' || ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
         $host = $_SERVER['HTTP_HOST'] ?? '';
         $webhookUrl = 'https://' . $host . '/api/index.php';
 
-        $payload = ['url' => $webhookUrl];
+        $payload = [
+            'url' => $webhookUrl,
+            'allowed_updates' => ['message', 'channel_post', 'callback_query', 'chat_member', 'my_chat_member'],
+        ];
         if (WEBHOOK_SECRET !== '') {
             $payload['secret_token'] = WEBHOOK_SECRET;
         }
@@ -52,6 +55,11 @@ if (!is_array($update)) {
 
 if (isset($update['callback_query']) && is_array($update['callback_query'])) {
     handleCallbackQuery($update['callback_query']);
+    finishRequest();
+}
+
+if (isset($update['my_chat_member']) && is_array($update['my_chat_member'])) {
+    handleMyChatMember($update['my_chat_member']);
     finishRequest();
 }
 
