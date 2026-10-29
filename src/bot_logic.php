@@ -746,3 +746,333 @@ function handleCallbackQuery(array $cb): void {
 
         if (isKhatmComplete($khatm)) {
             answerCallbackQuery($cbId, '✅ این ختم تکمیل شده است.', true);
+            if ($messageId !== null) {
+                apiPost('editMessageText', [
+                    'chat_id' => $chatId,
+                    'message_id' => $messageId,
+                    'text' => buildKhatmPrivateText($khatm, null, getKhatmUserTotal($khatmId, (string)$userId)),
+                    'reply_markup' => buildKhatmPrivateKeyboard($khatm),
+                ]);
+            }
+            return;
+        }
+
+        answerCallbackQuery($cbId, "✅ {$amount} ذکر ثبت شد.");
+
+        $userLockKey = "khatm_user_lock:{$khatmId}:{$userId}";
+        $hasLock = redisWaitLock($userLockKey, 5, 3000);
+
+        $mine = addKhatmContribution($khatmId, (string)$userId, $amount);
+        $newKhatm = getKhatm($khatmId);
+
+        if ($newKhatm) {
+            editOrSendMessage(
+                $chatId,
+                $messageId,
+                buildKhatmPrivateText($newKhatm, "✅ {$amount} ذکر ثبت شد.", $mine),
+                buildKhatmPrivateKeyboard($newKhatm)
+            );
+        }
+
+        if ($hasLock) redisDel($userLockKey);
+
+        if ($newKhatm) {
+            updateChannelKhatmMessage($khatmId, isKhatmComplete($newKhatm));
+        }
+        return;
+    }
+
+    if ($data === 'khatm_refresh') {
+        answerCallbackQuery($cbId);
+        return;
+    }
+
+    if ($data === 'show_sponsor_channel') {
+        $sponsorText = getSponsorText();
+        $sponsorText = mb_substr($sponsorText, 0, 200);
+        answerCallbackQuery($cbId, $sponsorText, true);
+        return;
+    }
+
+    if ($data === 'check_force_join') {
+        $check = checkUserForceJoin($userId, false);
+        if ($check['ok']) {
+            answerCallbackQuery($cbId, '✅ عضویت تایید شد.', false);
+            if ($messageId !== null) {
+                apiPost('editMessageText', [
+                    'chat_id' => $chatId,
+                    'message_id' => $messageId,
+                    'text' => '✅ عضویت شما تایید شد.',
+                ]);
+            }
+            sendStartMenu($chatId);
+        } else {
+            answerCallbackQuery($cbId, '❌ هنوز عضو همه‌ی کانال‌ها نشدید.', true);
+        }
+        return;
+    }
+
+    if ($data === 'khatm_cancel') {
+        clearUserState((string)$userId);
+        answerCallbackQuery($cbId, 'لغو شد.');
+        editOrSendMessage($chatId, $messageId, "❌ ساخت ختم لغو شد.", khatmBackKeyboard());
+        return;
+    }
+
+    if (strpos($data, 'khatm_channel:') === 0) {
+        if ($chatType !== 'private') { answerCallbackQuery($cbId); return; }
+        $chId = substr($data, 14);
+
+        $owner = getChannelOwner($chId);
+        if ($owner === null || ((string)$owner !== (string)$userId && !isBotOwner($userId))) {
+            answerCallbackQuery($cbId, '⛔ این کانال متعلق به شما نیست.', true);
+            return;
+        }
+
+        answerCallbackQuery($cbId, 'در حال ارسال...');
+        sendKhatmChannelPreview($chatId, $userId, $chId);
+        return;
+    }
+
+    if ($chatType !== 'private') { answerCallbackQuery($cbId); return; }
+
+    if ($data !== 'menu_bug') {
+        $check = checkUserForceJoin($userId, false);
+        if (!$check['ok']) {
+            answerCallbackQuery($cbId, '⚠️ اول تو کانال‌های معرفی‌شده عضو شوید.', true);
+            sendForceJoinPrompt($chatId, $check['missing']);
+            return;
+        }
+    }
+
+    if ($data === 'special_menu' || strpos($data, 'khatm_') === 0) {
+        handleKhatmCallback($cb);
+        return;
+    }
+
+    answerCallbackQuery($cbId);
+
+    switch ($data) {
+        case 'menu_connect':
+            editOrSendMessage(
+                $chatId, $messageId,
+                getConnectText(),
+                ['inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'khatm_menu']]]]
+            );
+            break;
+        case 'menu_mylist': handleMyList($chatId, $userId); break;
+        case 'menu_help': sendMessageWithKeyboard($chatId, getHelpText()); break;
+        case 'menu_sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
+        case 'menu_bug': sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمتن مشکل رو بعد از این دستور بنویسید و بفرستید:\n\n/bug"); break;
+    }
+}
+
+/* ───────────────── Router متن ───────────────── */
+
+function handleTextMessage(array $message): void {
+    $chatId = $message['chat']['id'] ?? null;
+    $chatType = $message['chat']['type'] ?? 'private';
+    $userId = $message['from']['id'] ?? null;
+    $text = trim($message['text'] ?? '');
+    $stateText = trim($message['text'] ?? ($message['caption'] ?? ''));
+
+    if (!$chatId || !$userId || ($text === '' && !isset($message['photo']))) return;
+    if ($chatType !== 'private' && strpos($text, '/') !== 0) return;
+
+    $userIdStr = (string)$userId;
+
+    $replyButtonMap = [
+        '➕ اتصال کانال' => 'connect', '➕ اتصال کانال جدید' => 'connect',
+        '📋 کانال‌های من' => 'mylist', '📖 راهنما' => 'help',
+        '📖 راهنمای استفاده' => 'help', '🌟 اسپانسر' => 'sponsor',
+        '🌟 اسپانسر ما' => 'sponsor', '🐞 گزارش باگ' => 'bug',
+        '✨ قابلیت‌های ویژه' => 'special',
+        '🔙 بازگشت به منوی اصلی' => 'back_to_main'
+    ];
+
+    if ($chatType === 'private') {
+        $userState = getUserState($userIdStr);
+        if ($userState !== null && strpos($userState, 'khatm_') === 0) {
+            if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
+                abortKhatmFlow($chatId, $userIdStr);
+            } else {
+                handleKhatmState($chatId, $userId, $userState, $stateText, $message);
+                return;
+            }
+        }
+    }
+
+    if (isset($replyButtonMap[$text])) {
+        $forceCheck = checkUserForceJoin($userId, false);
+        if (!$forceCheck['ok']) { sendForceJoinPrompt($chatId, $forceCheck['missing']); return; }
+
+        if ($replyButtonMap[$text] === 'back_to_main') {
+            sendStartMenu($chatId); return;
+        }
+
+        switch ($replyButtonMap[$text]) {
+            case 'connect': sendMessageWithKeyboard($chatId, getConnectText()); break;
+            case 'mylist': handleMyList($chatId, $userId); break;
+            case 'help': sendMessageWithKeyboard($chatId, getHelpText()); break;
+            case 'sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
+            case 'bug': sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمتن مشکل رو بعد از این دستور بنویسید و بفرستید:\n\n/bug"); break;
+            case 'special': sendSpecialMenu($chatId); break;
+        }
+        return;
+    }
+
+    [$cmd, $arg] = parseCommand($text);
+    if ($cmd === null) return;
+
+    $resetForce = ($cmd === 'start');
+    $skipForceCheck = in_array($cmd, ['help', 'bug', 'status', 'khatm_stats'], true);
+
+    if ($cmd === 'start' && strpos((string)$arg, 'khatm_') === 0) $skipForceCheck = true;
+
+    if (!$skipForceCheck) {
+        $forceCheck = checkUserForceJoin($userId, $resetForce);
+        if (!$forceCheck['ok']) { sendForceJoinPrompt($chatId, $forceCheck['missing']); return; }
+    }
+
+    switch ($cmd) {
+        case 'start':
+            if (strpos((string)$arg, 'khatm_') === 0) {
+                $khatmId = (string)$arg;
+                $khatm = preg_match('/^khatm_[A-Za-z0-9]+$/', $khatmId) ? getKhatm($khatmId) : null;
+
+                if ($khatm) {
+                    $mine = getKhatmUserTotal($khatmId, $userIdStr);
+                    sendMessageWithKeyboard($chatId, buildKhatmPrivateText($khatm, null, $mine), buildKhatmPrivateKeyboard($khatm));
+                    return;
+                }
+            }
+            sendStartMenu($chatId);
+            break;
+
+        case 'help': sendMessageWithKeyboard($chatId, getHelpText()); break;
+        case 'status':
+            $msg = "🤖 ربات آنفالویاب: آنلاین\n🕒 " . date('Y-m-d H:i:s');
+            if (isBotOwner($userId)) $msg .= "\n🗄 Redis: ✅\n📦 استخر: " . count(getForceChannelsPool());
+            sendMessageWithKeyboard($chatId, $msg);
+            break;
+        case 'add':
+        case 'connect': handleConnect($chatId, $userId, (string)$arg); break;
+        case 'my': handleMyList($chatId, $userId); break;
+        case 'remove': handleRemoveChannel($chatId, $userId, (string)$arg); break;
+        case 'history': handleHistory($chatId, $userId, (string)$arg); break;
+
+        case 'bug':
+            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ متن مشکل رو بعد از bug بنویسید."); return; }
+            if (BOT_OWNER_ID === '') { sendMessageWithKeyboard($chatId, "❌ دریافت گزارش غیرفعاله."); return; }
+            $senderName = trim(($message['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? '')) ?: 'بدون نام';
+            $senderUsername = $message['from']['username'] ?? '';
+            $bugText = "🐞 گزارش باگ\n\n👤 " . $senderName . "\n🔖 " . ($senderUsername !== '' ? '@' . $senderUsername : 'ندارد') . "\n🔢 " . $userId . "\n━━━━━━━━━━━━━━\n" . $arg;
+            sendPlainText(BOT_OWNER_ID, $bugText);
+            sendMessageWithKeyboard($chatId, "✅ گزارش ارسال شد.");
+            break;
+
+        case 'zk9xad':
+            if (!isBotOwner($userId)) return;
+            sendMessageWithKeyboard($chatId, getAdminHelpText()); break;
+        case 'zk9xch':
+            if (!isBotOwner($userId)) return;
+            $all = getAllChannelsMap();
+            if (empty($all)) { sendMessageWithKeyboard($chatId, "📭 خالی است."); return; }
+            $msg = "👑 کل کانال‌ها (" . count($all) . "):\n\n";
+            foreach ($all as $chId => $info) $msg .= "🔹 " . ($info['title'] ?: 'بدون نام') . "\nآیدی: {$chId}\nمالک: {$info['owner_id']}\n\n";
+            sendMessageWithKeyboard($chatId, $msg);
+            break;
+        case 'zk9xfa':
+            if (!isBotOwner($userId)) return;
+            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ آیدی کانال رو بنویسید. مثال:\n/zk9xfa mychannel"); return; }
+            $check = checkBotIsAdminInChannel($arg);
+            if (!$check['ok'] || !addForceChannelToPool($arg)) { sendMessageWithKeyboard($chatId, "❌ خطا. اول ربات رو ادمین کنید."); return; }
+            sendMessageWithKeyboard($chatId, "✅ اضافه شد.");
+            break;
+        case 'zk9xfd':
+            if (!isBotOwner($userId)) return;
+            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ آیدی کانال رو بنویسید. مثال:\n/zk9xfd mychannel"); return; }
+            sendMessageWithKeyboard($chatId, removeForceChannelFromPool($arg) ? "🗑 حذف شد." : "❌ پیدا نشد.");
+            break;
+        case 'zk9xfl':
+            if (!isBotOwner($userId)) return;
+            $pool = getForceChannelsPool();
+            if (empty($pool)) { sendMessageWithKeyboard($chatId, "📭 استخر خالیه."); return; }
+            $msg = "📢 استخر (" . count($pool) . "):\n\n";
+            foreach ($pool as $idx => $ch) $msg .= ($idx + 1) . ". " . $ch . "\n";
+            sendMessageWithKeyboard($chatId, $msg);
+            break;
+        case 'zk9xst':
+            if (!isBotOwner($userId)) return;
+            $pool = getForceChannelsPool();
+            $msg = "🔍 دیباگ (" . count($pool) . " کانال):\n\n";
+            foreach ($pool as $idx => $ch) {
+                $c = checkBotIsAdminInChannel($ch);
+                $msg .= ($idx + 1) . ". " . $ch . ($c['ok'] ? " ✅" : " ❌ ({$c['error']})") . "\n";
+            }
+            sendMessageWithKeyboard($chatId, $msg);
+            break;
+        case 'zk9xsp':
+            if (!isBotOwner($userId)) return;
+            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ متن اسپانسر رو بنویسید."); return; }
+            setSponsorText($arg);
+            sendMessageWithKeyboard($chatId, "✅ اسپانسر بروزرسانی شد.");
+            break;
+    }
+}
+
+/* ───────────────── رویداد خروج عضو ───────────────── */
+
+function processMemberLeft(array $chat, array $user, ?array $actor = null): void {
+    if (!empty($user['is_bot'])) return;
+    $channelId = $chat['id'] ?? null;
+    if (!$channelId) return;
+    $channelIdStr = (string)$channelId;
+    $ownerId = getChannelOwner($channelIdStr);
+    if (!$ownerId) return;
+
+    $channelTitle = $chat['title'] ?? 'کانال بدون نام';
+    $channelUsername = isset($chat['username']) ? '@' . $chat['username'] : '';
+    $userId = $user['id'] ?? 'نامشخص';
+    $fullName = trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')) ?: 'بدون نام';
+    $username = $user['username'] ?? '';
+    $timeStr = date('Y/m/d - H:i:s');
+
+    saveLeaveHistory($channelIdStr, ['user_id' => $userId, 'name' => $fullName, 'username' => $username, 'time' => $timeStr]);
+
+    $usernameLine = $username !== '' ? "@" . $username : 'ندارد';
+    $channelLine = $channelUsername !== '' ? $channelTitle . " (" . $channelUsername . ")" : $channelTitle;
+    $actionType = 'خروج از کانال';
+
+    if ($actor !== null && isset($actor['id']) && (string)$actor['id'] !== (string)$userId) {
+        $actorName = trim(($actor['first_name'] ?? '') . ' ' . ($actor['last_name'] ?? '')) ?: 'ادمین';
+        $actionType = "حذف توسط " . $actorName;
+    }
+
+    $report = "📤 گزارش خروج عضو\n\n"
+            . "📢 کانال: " . $channelLine . "\n"
+            . "🆔 آیدی: " . $channelIdStr . "\n"
+            . "━━━━━━━━━━━━━━\n"
+            . "👤 نام: " . $fullName . "\n"
+            . "🔖 یوزرنیم: " . $usernameLine . "\n"
+            . "🔢 آیدی: " . $userId . "\n"
+            . "📌 نوع: " . $actionType . "\n"
+            . "🕒 زمان: " . $timeStr;
+
+    sendPlainText($ownerId, $report);
+}
+
+function handleChatMemberUpdate(array $cm): void {
+    $chat = $cm['chat'] ?? [];
+    $oldStatus = $cm['old_chat_member']['status'] ?? '';
+    $newStatus = $cm['new_chat_member']['status'] ?? '';
+    $user = $cm['new_chat_member']['user'] ?? ($cm['old_chat_member']['user'] ?? []);
+    $actor = $cm['from'] ?? null;
+
+    $wasMember = in_array($oldStatus, ['member', 'administrator', 'restricted'], true);
+    $isGone = in_array($newStatus, ['left', 'kicked'], true);
+
+    if ($wasMember && $isGone && !empty($user)) {
+        processMemberLeft($chat, $user, $actor);
+    }
+}
