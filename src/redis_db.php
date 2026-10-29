@@ -77,6 +77,16 @@ function redisAcquireLock(string $key, int $ttl): bool {
     return $res === 'OK';
 }
 
+/** تا $maxWaitMs میلی‌ثانیه برای گرفتن قفل صبر می‌کند (هر ۱۰۰ms یک تلاش). */
+function redisWaitLock(string $key, int $ttl, int $maxWaitMs): bool {
+    $deadline = microtime(true) + ($maxWaitMs / 1000);
+    do {
+        if (redisAcquireLock($key, $ttl)) return true;
+        usleep(100000);
+    } while (microtime(true) < $deadline);
+    return false;
+}
+
 function redisHSet(string $key, string $field, string $value): bool {
     return redisExec(['HSET', $key, $field, $value]) !== null;
 }

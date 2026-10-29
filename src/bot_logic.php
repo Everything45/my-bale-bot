@@ -2,7 +2,7 @@
 // src/bot_logic.php
 declare(strict_types=1);
 
-const KHATM_EDIT_THROTTLE_SECONDS = 3; // حداقل فاصله‌ی ادیت پست کانال
+const KHATM_EDIT_THROTTLE_SECONDS = 2; // حداقل فاصله‌ی ادیت پست کانال
 const KHATM_MAX_TITLE = 100;
 const KHATM_MAX_DESC = 700;            // کپشن عکس حداکثر ۱۰۲۴ کاراکتر است
 const KHATM_MAX_TARGET = 1000000000;
@@ -131,27 +131,35 @@ function sendStartMenu($chatId): void {
 function getHelpText(): string {
     return "📖 راهنمای استفاده\n━━━━━━━━━━━━━━━━━━\n\n"
          . "1️⃣ ربات رو تو کانالتون ادمین کنید (با دسترسی مدیریت اعضا)\n\n"
-         . "2️⃣ کانال رو وصل کنید:\n/add نام یا آیدی کانال\n\n"
+         . "2️⃣ کانال رو وصل کنید:\n/add mynews\n"
+         . "(به‌جای mynews آیدی کانالتون رو بنویسید)\n\n"
          . "━━━━━━━━━━━━━━━━━━\n🛠 دستورات\n\n"
          . "/my — لیست کانال‌ها\n"
          . "/status — وضعیت ربات\n"
-         . "/history آیدی کانال — آخرین خروج‌ها\n"
-         . "/remove آیدی کانال — قطع اتصال\n"
-         . "/bug متن مشکل — گزارش مشکل\n"
+         . "/history mynews — آخرین خروج‌های کانال\n"
+         . "/remove mynews — قطع اتصال کانال\n"
+         . "/bug — گزارش مشکل (بعد از دستور، متن مشکل را بنویسید)\n"
          . "/start — منوی اصلی و شروع";
 }
 
 function getConnectText(): string {
     return "➕ اتصال کانال\n\n"
          . "1. ربات رو تو کانال ادمین کنید\n"
-         . "2. به‌جای mynews آیدی کانالتون رو بنویسید و بفرستید:\n"
-         . "/add mynews";
+         . "2. دستور زیر رو بفرستید:\n"
+         . "/add mynews\n"
+         . "(به‌جای mynews آیدی کانالتون رو بنویسید)";
 }
 
 function getAdminHelpText(): string {
     return "👑 پنل مدیریت (مخصوص مالک)\n━━━━━━━━━━━━━━━━━━\n\n"
-         . "📊 مشاهده\n/zk9xch — کل کانال‌ها\n/zk9xfl — استخر عضویت اجباری\n/zk9xst [آیدی] — دیباگ\n\n"
-         . "⚙️ تنظیمات\n/zk9xfa کانال — افزودن به استخر\n/zk9xfd کانال — حذف از استخر\n/zk9xsp متن — تنظیم اسپانسر\n\n"
+         . "📊 مشاهده\n"
+         . "/zk9xch — کل کانال‌ها\n"
+         . "/zk9xfl — استخر عضویت اجباری\n"
+         . "/zk9xst — دیباگ استخر\n\n"
+         . "⚙️ تنظیمات\n"
+         . "/zk9xfa mychannel — افزودن به استخر\n"
+         . "/zk9xfd mychannel — حذف از استخر\n"
+         . "/zk9xsp text — تنظیم متن اسپانسر\n\n"
          . "━━━━━━━━━━━━━━━━━━\n⚠️ این دستورات رو جایی منتشر نکنید.";
 }
 
@@ -168,7 +176,7 @@ function resolveChannelId(string $target): ?string {
 /* ───────────────── مدیریت کانال ───────────────── */
 
 function handleConnect($chatId, $userId, string $arg): void {
-    if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ نام کانال رو بعد از دستور add بنویسید.\n\nمثال:\n/add mynews"); return; }
+    if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ آیدی کانال رو بعد از دستور بنویسید.\n\nمثال:\n/add mynews"); return; }
     $target = trim($arg);
     if ($target[0] !== '@' && !preg_match('/^-?\d+$/', $target)) $target = '@' . $target;
     $chatRes = apiPost('getChat', ['chat_id' => $target]);
@@ -201,7 +209,7 @@ function handleConnect($chatId, $userId, string $arg): void {
 
 function handleMyList($chatId, $userId): void {
     $channels = getOwnerChannels($userId);
-    if (empty($channels)) { sendMessageWithKeyboard($chatId, "📭 هنوز کانالی ثبت نکردید.\n\nبرای اتصال:\n1. ربات رو ادمین کنید\n2. /add نام‌کانال"); return; }
+    if (empty($channels)) { sendMessageWithKeyboard($chatId, "📭 هنوز کانالی ثبت نکردید.\n\nبرای اتصال:\n1. ربات رو ادمین کنید\n2. این دستور رو بفرستید:\n/add mynews"); return; }
     $msg = "📋 کانال‌های شما:\n\n";
     foreach ($channels as $chId => $info) {
         $msg .= "🔹 " . ($info['title'] ?: 'بدون نام') . ($info['username'] ? " ({$info['username']})" : '') . "\nآیدی: {$chId}\n\n";
@@ -632,15 +640,24 @@ function sendKhatmChannelPreview($chatId, $userId, string $chId): void {
     }
 }
 
-// آپدیت متن و دکمه‌های پست کانال (کپشن برای عکس، متن برای پیام متنی)
-// برای جلوگیری از محدودیت نرخ، ادیت‌ها throttle می‌شوند مگر $force=true
-function updateChannelKhatmMessage(string $khatmId, bool $force = false): void {
+// ارسال زودهنگام پاسخ HTTP به وب‌هوک (اگر سرور پشتیبانی کند) تا انتظار بعدی کاربر را معطل نکند
+function flushResponseEarly(): void {
+    if (function_exists('fastcgi_finish_request')) {
+        if (!headers_sent()) { http_response_code(200); }
+        echo 'OK';
+        fastcgi_finish_request();
+    }
+}
+
+// بازه‌ی کمینه‌ی بین دو ادیت پست کانال
+function khatmEditWindow(): int {
+    return function_exists('fastcgi_finish_request') ? KHATM_EDIT_THROTTLE_SECONDS : 1;
+}
+
+// وضعیت «تازه» ختم را می‌خواند و پست کانال را همان لحظه با آن ویرایش می‌کند
+function renderChannelKhatmPost(string $khatmId): void {
     $khatm = getKhatm($khatmId);
     if (!$khatm || empty($khatm['channel_id']) || empty($khatm['channel_msg_id'])) return;
-
-    if (!$force && !redisAcquireLock("khatm_edit_lock:{$khatmId}", KHATM_EDIT_THROTTLE_SECONDS)) {
-        return;
-    }
 
     $botUsername = getBotUsername();
     if (!$botUsername) return;
@@ -662,6 +679,39 @@ function updateChannelKhatmMessage(string $khatmId, bool $force = false): void {
             'text' => $caption,
             'reply_markup' => $keyboard,
         ]);
+    }
+}
+
+// آپدیت پست کانال با throttle که هیچ شمارشی را جا نمی‌اندازد:
+// - درخواستی که قفل را بگیرد پست را ویرایش می‌کند، سپس یک بازه صبر می‌کند
+// - درخواست‌هایی که در این بازه برسند فقط علامت «dirty» می‌گذارند
+// - صاحب قفل در پایان بازه، اگر dirty بود، یک بار دیگر با آخرین اعداد ویرایش می‌کند
+// $force=true (لحظه‌ی تکمیل ختم) بدون throttle و فوراً ویرایش می‌کند.
+function updateChannelKhatmMessage(string $khatmId, bool $force = false): void {
+    $lockKey = "khatm_edit_lock:{$khatmId}";
+    $dirtyKey = "khatm_dirty:{$khatmId}";
+    $window = khatmEditWindow();
+
+    if ($force) {
+        redisDel($dirtyKey);
+        renderChannelKhatmPost($khatmId);
+        return;
+    }
+
+    if (!redisAcquireLock($lockKey, $window)) {
+        redisSet($dirtyKey, '1', 30);
+        return;
+    }
+
+    redisDel($dirtyKey);
+    renderChannelKhatmPost($khatmId);
+
+    flushResponseEarly();
+    usleep($window * 1000000 + 100000);
+
+    if (redisGet($dirtyKey) !== null) {
+        redisDel($dirtyKey);
+        renderChannelKhatmPost($khatmId);
     }
 }
 
@@ -713,25 +763,32 @@ function handleCallbackQuery(array $cb): void {
             return;
         }
 
-        $mine = addKhatmContribution($khatmId, (string)$userId, $amount);
-        $newKhatm = getKhatm($khatmId);
-        if (!$newKhatm) {
-            answerCallbackQuery($cbId, '❌ ختم پیدا نشد.', true);
-            return;
-        }
-
+        // اول به کلیک جواب می‌دهیم تا کاربر منتظر نماند؛ بعد کار سنگین‌تر انجام می‌شود
         answerCallbackQuery($cbId, "✅ {$amount} ذکر ثبت شد.");
 
-        // همان پیام خصوصی ویرایش می‌شود و پیام تأیید ثبت داخل آن نوشته می‌شود (بدون پیام جدید)
-        editOrSendMessage(
-            $chatId,
-            $messageId,
-            buildKhatmPrivateText($newKhatm, "✅ {$amount} ذکر ثبت شد.", $mine),
-            buildKhatmPrivateKeyboard($newKhatm)
-        );
+        // کلیک‌های پشت‌سرهم یک کاربر به‌ترتیب پردازش می‌شوند تا ویرایش‌ها جابه‌جا نشوند
+        $userLockKey = "khatm_user_lock:{$khatmId}:{$userId}";
+        $hasLock = redisWaitLock($userLockKey, 5, 3000);
 
-        // آپدیت زنده پست کانال؛ در لحظه‌ی تکمیل بدون throttle
-        updateChannelKhatmMessage($khatmId, isKhatmComplete($newKhatm));
+        $mine = addKhatmContribution($khatmId, (string)$userId, $amount);
+        $newKhatm = getKhatm($khatmId); // بعد از ثبت خوانده می‌شود: اعداد همیشه تازه‌اند
+
+        if ($newKhatm) {
+            // همان پیام خصوصی ویرایش می‌شود و پیام تأیید ثبت داخل آن نوشته می‌شود (بدون پیام جدید)
+            editOrSendMessage(
+                $chatId,
+                $messageId,
+                buildKhatmPrivateText($newKhatm, "✅ {$amount} ذکر ثبت شد.", $mine),
+                buildKhatmPrivateKeyboard($newKhatm)
+            );
+        }
+
+        if ($hasLock) redisDel($userLockKey);
+
+        // آپدیت پست کانال؛ در لحظه‌ی تکمیل بدون throttle
+        if ($newKhatm) {
+            updateChannelKhatmMessage($khatmId, isKhatmComplete($newKhatm));
+        }
         return;
     }
 
@@ -819,7 +876,7 @@ function handleCallbackQuery(array $cb): void {
         case 'menu_mylist': handleMyList($chatId, $userId); break;
         case 'menu_help': sendMessageWithKeyboard($chatId, getHelpText()); break;
         case 'menu_sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
-        case 'menu_bug': sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمشکل رو این‌طوری بفرستید:\n\n/bug متن مشکل"); break;
+        case 'menu_bug': sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمتن مشکل رو بعد از این دستور بنویسید و بفرستید:\n\n/bug"); break;
     }
 }
 
@@ -873,7 +930,7 @@ function handleTextMessage(array $message): void {
             case 'mylist': handleMyList($chatId, $userId); break;
             case 'help': sendMessageWithKeyboard($chatId, getHelpText()); break;
             case 'sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
-            case 'bug': sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمشکل رو این‌طوری بفرستید:\n\n/bug متن مشکل"); break;
+            case 'bug': sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمتن مشکل رو بعد از این دستور بنویسید و بفرستید:\n\n/bug"); break;
             case 'special': sendSpecialMenu($chatId); break;
         }
         return;
@@ -942,14 +999,14 @@ function handleTextMessage(array $message): void {
             break;
         case 'zk9xfa':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ مثال: /zk9xfa mychannel"); return; }
+            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ آیدی کانال رو بنویسید. مثال:\n/zk9xfa mychannel"); return; }
             $check = checkBotIsAdminInChannel($arg);
             if (!$check['ok'] || !addForceChannelToPool($arg)) { sendMessageWithKeyboard($chatId, "❌ خطا. اول ربات رو ادمین کنید."); return; }
             sendMessageWithKeyboard($chatId, "✅ اضافه شد.");
             break;
         case 'zk9xfd':
             if (!isBotOwner($userId)) return;
-            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ مثال: /zk9xfd mychannel"); return; }
+            if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ آیدی کانال رو بنویسید. مثال:\n/zk9xfd mychannel"); return; }
             sendMessageWithKeyboard($chatId, removeForceChannelFromPool($arg) ? "🗑 حذف شد." : "❌ پیدا نشد.");
             break;
         case 'zk9xfl':
