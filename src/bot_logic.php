@@ -134,8 +134,8 @@ function getHelpText(): string {
          . "2️⃣ کانال رو وصل کنید:\n"
          . "اتصال کانال:(به‌جای mynews آیدی کانالتون رو بنویسید)\n\n"
          . "/add mynews\n"
-         . "━━━━━━━━━━━━━━━━━━\n"
-         . "🔰 متن و توضیحات دستورات\n"
+         
+         . "🔰 متن و توضیحات دستورات🔰\n"
          . "/start\n"
          . "/my\n"
          . "/status\n"
@@ -148,7 +148,7 @@ function getHelpText(): string {
          . "🔹 آخرین خروج‌های کانال\n"
          . "🔹 قطع اتصال کانال\n"
          . "🔹 گزارش مشکل (بعد از دستور، متن مشکل را بنویسید)\n\n"
-         . "━━━━━━━━━━━━━━━━━━\n⚠️ (به‌جای mynews آیدی کانالتون رو بنویسید)";
+         . "⚠️ (به‌جای mynews آیدی کانالتون رو بنویسید)⚠️";
 }
 
 function getConnectText(): string {
@@ -160,8 +160,7 @@ function getConnectText(): string {
 }
 
 function getAdminHelpText(): string {
-    return "👑 پنل مدیریت (مخصوص مالک)\n"
-         . "━━━━━━━━━━━━━━━━━━\n"
+    return "👑 پنل مدیریت (مخصوص مالک)👑\n"
          . "📊 مشاهده\n"
          . "/zk9xch\n"
          . "/zk9xfl\n"
@@ -176,7 +175,7 @@ function getAdminHelpText(): string {
          . "🔹 افزودن به استخر\n"
          . "🔹 حذف از استخر\n"
          . "🔹 تنظیم متن اسپانسر\n\n"
-         . "━━━━━━━━━━━━━━━━━━\n⚠️ این دستورات رو جایی منتشر نکنید.";
+         . "⚠️ این دستورات رو جایی منتشر نکنید. ⚠️";
 }
 
 function resolveChannelId(string $target): ?string {
