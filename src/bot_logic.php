@@ -142,8 +142,8 @@ function getHelpText(): string {
          . "/history mynews\n\n"
          . "🔹 قطع اتصال کانال:\n"
          . "/remove mynews\n\n"
-         . "🔹 گزارش مشکل (متن مشکل را بعد از دستور بنویسید):\n"
-         . "/bug متن مشکل\n\n"
+         . "🔹 گزارش مشکل (متن مشکل را بعد از دستور به جای (Error or problem) بنویسید):\n"
+         . "/bug Error or problem \n\n"
          . "🔹 منوی اصلی و شروع:\n"
          . "/start";
 }
