@@ -133,7 +133,19 @@ function getHelpText(): string {
          . "1️⃣ ربات رو تو کانالتون ادمین کنید (با دسترسی مدیریت اعضا)\n\n"
          . "2️⃣ کانال رو وصل کنید:\n/add نام یا آیدی کانال\n\n"
          . "━━━━━━━━━━━━━━━━━━\n🛠 دستورات\n\n"
-         . "/my — لیست کانال‌ها\n/status — وضعیت ربات\n/history نام‌کانال — آخرین خروج‌ها\n/remove نام‌کانال — قطع اتصال\n/bug متن — گزارش مشکل\n/start — منوی اصلی";
+         . "/my — لیست کانال‌ها\n"
+         . "/status — وضعیت ربات\n"
+         . "/history آیدی کانال — آخرین خروج‌ها\n"
+         . "/remove آیدی کانال — قطع اتصال\n"
+         . "/bug متن مشکل — گزارش مشکل\n"
+         . "/start — منوی اصلی و شروع";
+}
+
+function getConnectText(): string {
+    return "➕ اتصال کانال\n\n"
+         . "1. ربات رو تو کانال ادمین کنید\n"
+         . "2. به‌جای mynews آیدی کانالتون رو بنویسید و بفرستید:\n"
+         . "/add mynews";
 }
 
 function getAdminHelpText(): string {
@@ -800,7 +812,7 @@ function handleCallbackQuery(array $cb): void {
             // دکمه از داخل منوی ختم می‌آید؛ همان پیام ویرایش می‌شود
             editOrSendMessage(
                 $chatId, $messageId,
-                "➕ اتصال کانال\n\n1. ربات رو تو کانال ادمین کنید\n2. این رو بفرستید:\n/add mynews",
+                getConnectText(),
                 ['inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'khatm_menu']]]]
             );
             break;
@@ -857,7 +869,7 @@ function handleTextMessage(array $message): void {
         }
 
         switch ($replyButtonMap[$text]) {
-            case 'connect': sendMessageWithKeyboard($chatId, "➕ اتصال کانال\n\n1. ربات رو تو کانال ادمین کنید\n2. این mynews رو با آیدی کانالت جاگزاری کن بفرستید:\n/add mynews"); break;
+            case 'connect': sendMessageWithKeyboard($chatId, getConnectText()); break;
             case 'mylist': handleMyList($chatId, $userId); break;
             case 'help': sendMessageWithKeyboard($chatId, getHelpText()); break;
             case 'sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
