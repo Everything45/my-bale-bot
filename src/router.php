@@ -15,7 +15,7 @@ function handleTextMessage(array $message): void {
     $userIdStr = (string)$userId;
 
     $replyButtonMap = [
-        '➕ اتصال کانال' => 'connect', '➕ اتصال کانال جدید' => 'connect',
+        '➕ اتصال آنفالویاب کانال' => 'connect', '➕ اتصال آنفالویاب کانال جدید' => 'connect',
         '📋 کانال‌های من' => 'mylist', '📖 راهنما' => 'help',
         '📖 راهنمای استفاده' => 'help', '🌟 اسپانسر' => 'sponsor',
         '🌟 اسپانسر ما' => 'sponsor', '🐞 گزارش باگ' => 'bug',
