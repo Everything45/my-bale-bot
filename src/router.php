@@ -21,13 +21,14 @@ function handleTextMessage(array $message): void {
         '🌟 اسپانسر ما' => 'sponsor', '🐞 گزارش باگ' => 'bug',
         '✨ قابلیت‌های ویژه' => 'special',
         '🤖 چت AI' => 'ai',
+        '🔍 استخراج اطلاعات آیدی من' => 'myid',
         '🔙 بازگشت به منوی اصلی' => 'back_to_main'
     ];
 
     // ─── حالت چت AI ───
     if ($chatType === 'private' && getUserState($userIdStr) === 'ai_chat') {
         if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
-            clearUserState($userIdStr);       // از حالت خارج می‌شویم و دستور/دکمه را پردازش می‌کنیم
+            clearUserState($userIdStr);
         } else {
             handleAiChat($chatId, $userId, $stateText);
             return;
@@ -68,6 +69,18 @@ function handleTextMessage(array $message): void {
                     "🤖 به چت AI خوش آمدید!\n\nهر سوالی دارید بپرسید. برای خروج /end یا دکمه زیر را بزنید.",
                     ['inline_keyboard' => [[['text' => '❌ خروج از چت AI', 'callback_data' => 'ai_exit']]]]
                 );
+                break;
+            // ─── ⭐ نمایش اطلاعات آیدی خود کاربر ───
+            case 'myid':
+                $fname = trim(($message['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? '')) ?: 'بدون نام';
+                $uname = (string)($message['from']['username'] ?? '');
+                $numId = (string)$userId;
+                $msg = "🆔 اطلاعات آیدی شما:\n\n"
+                     . "📛 نام: {$fname}\n"
+                     . "🔖 یوزرنیم: " . ($uname !== '' ? '@' . $uname : 'ندارد') . "\n"
+                     . "🔢 آیدی عددی: {$numId}\n\n"
+                     . "💡 این آیدی عددی را می‌توانید برای اتصال گروه/کانال خصوصی با دستور /add {$numId} استفاده کنید.";
+                sendMessageWithKeyboard($chatId, $msg);
                 break;
         }
         return;
@@ -123,7 +136,6 @@ function handleTextMessage(array $message): void {
             sendKhatmManageList($chatId, $userId);
             break;
 
-        // ─── ⭐ چت AI ───
         case 'ai':
             if ($chatType !== 'private') { sendMessageWithKeyboard($chatId, "🤖 چت AI فقط در چت خصوصی ربات در دسترس است."); break; }
             clearAiChatHistory($userIdStr);
@@ -133,29 +145,6 @@ function handleTextMessage(array $message): void {
                 "🤖 به چت AI خوش آمدید!\n\nهر سوالی دارید بپرسید. برای خروج /end یا دکمه زیر را بزنید.",
                 ['inline_keyboard' => [[['text' => '❌ خروج از چت AI', 'callback_data' => 'ai_exit']]]]
             );
-            break;
-
-        // ─── ⭐ شناسایی آیدی عددی ───
-        case 'id':
-        case 'whois':
-            $targetId = trim((string)$arg);
-            if ($targetId === '') {
-                sendMessageWithKeyboard($chatId, "❌ آیدی عددی را وارد کنید.\n\nمثال:\n/id 123456789");
-                return;
-            }
-            $info = getChatInfoById($targetId);
-            if ($info === null) {
-                sendMessageWithKeyboard($chatId, "❌ کاربری با این آیدی پیدا نشد (یا ربات به آن دسترسی ندارد).");
-                return;
-            }
-            $name = trim(($info['first_name'] ?? '') . ' ' . ($info['last_name'] ?? '')) ?: 'بدون نام';
-            $username = (string)($info['username'] ?? '');
-            $msg = "👤 اطلاعات آیدی {$targetId}:\n\n"
-                 . "📛 نام: {$name}\n"
-                 . "🔖 یوزرنیم: " . ($username !== '' ? '@' . $username : 'ندارد') . "\n"
-                 . "🔢 آیدی عددی: {$targetId}\n"
-                 . "📌 نوع: " . ($info['type'] ?? 'نامشخص');
-            sendMessageWithKeyboard($chatId, $msg);
             break;
 
         case 'bug':
