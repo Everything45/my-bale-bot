@@ -19,9 +19,10 @@ function handleTextMessage(array $message): void {
         '📋 کانال‌های من' => 'mylist', '📖 راهنما' => 'help',
         '📖 راهنمای استفاده' => 'help', '🌟 اسپانسر' => 'sponsor',
         '🌟 اسپانسر ما' => 'sponsor', '🐞 گزارش باگ' => 'bug',
-        '✨ قابلیت‌های ویژه' => 'special',
+        '📿 ختم‌ها' => 'khatm',
         '🤖 چت AI' => 'ai',
         '🔍 استخراج اطلاعات آیدی من' => 'myid',
+        '🔗 لینک ناشناس من' => 'anon',
         '🔙 بازگشت به منوی اصلی' => 'back_to_main'
     ];
 
@@ -31,6 +32,16 @@ function handleTextMessage(array $message): void {
             clearUserState($userIdStr);
         } else {
             handleAiChat($chatId, $userId, $stateText);
+            return;
+        }
+    }
+
+    // ─── حالت ارسال پیام ناشناس ───
+    if ($chatType === 'private' && getUserState($userIdStr) === 'anon_send') {
+        if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
+            clearUserState($userIdStr);
+        } else {
+            handleAnonSend($chatId, $userId, $stateText);
             return;
         }
     }
@@ -60,7 +71,11 @@ function handleTextMessage(array $message): void {
             case 'help':    sendMessageWithKeyboard($chatId, getHelpText()); break;
             case 'sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
             case 'bug':     sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمتن مشکل رو بعد از این دستور بنویسید و بفرستید:\n\n/bug"); break;
-            case 'special': sendSpecialMenu($chatId); break;
+            // ⭐ ختم‌ها — مستقیم از منوی اصلی
+            case 'khatm':
+                if ($chatType !== 'private') { sendMessageWithKeyboard($chatId, "📿 مدیریت ختم‌ها را داخل چت خصوصی ربات انجام دهید."); break; }
+                sendKhatmMenu($chatId, $userId);
+                break;
             case 'ai':
                 clearAiChatHistory($userIdStr);
                 setUserState($userIdStr, 'ai_chat');
@@ -70,7 +85,6 @@ function handleTextMessage(array $message): void {
                     ['inline_keyboard' => [[['text' => '❌ خروج از چت AI', 'callback_data' => 'ai_exit']]]]
                 );
                 break;
-            // ─── ⭐ نمایش اطلاعات آیدی خود کاربر ───
             case 'myid':
                 $fname = trim(($message['from']['first_name'] ?? '') . ' ' . ($message['from']['last_name'] ?? '')) ?: 'بدون نام';
                 $uname = (string)($message['from']['username'] ?? '');
@@ -82,12 +96,24 @@ function handleTextMessage(array $message): void {
                      . "💡 این آیدی عددی را می‌توانید برای اتصال گروه/کانال خصوصی با دستور /add {$numId} استفاده کنید.";
                 sendMessageWithKeyboard($chatId, $msg);
                 break;
+            case 'anon':
+                sendAnonMenu($chatId, $userId);
+                break;
         }
         return;
     }
 
     [$cmd, $arg] = parseCommand($text);
     if ($cmd === null) return;
+
+    // /start anon_XXX
+    if ($cmd === 'start' && strpos((string)$arg, 'anon_') === 0) {
+        if ($chatType !== 'private') {
+            sendMessageWithKeyboard($chatId, "❌ لینک ناشناس فقط در چت خصوصی ربات کار می‌کند.");
+            return;
+        }
+        redisSet("pending_anon:{$userIdStr}", substr((string)$arg, 5), 600);
+    }
 
     $resetForce = ($cmd === 'start');
     $skipForceCheck = in_array($cmd, ['help','bug','status'], true);
@@ -100,6 +126,12 @@ function handleTextMessage(array $message): void {
 
     switch ($cmd) {
         case 'start':
+            if (strpos((string)$arg, 'anon_') === 0) {
+                $code = substr((string)$arg, 5);
+                redisDel("pending_anon:{$userIdStr}");
+                handleAnonStart($chatId, $userId, $code);
+                return;
+            }
             if (strpos((string)$arg, 'khatm_') === 0) {
                 $khatmId = (string)$arg;
                 $khatm = preg_match('/^khatm_[A-Za-z0-9]+$/', $khatmId) ? getKhatm($khatmId) : null;
@@ -123,11 +155,8 @@ function handleTextMessage(array $message): void {
 
         case 'add':
         case 'connect': handleConnect($chatId, $userId, (string)$arg, (string)$chatType); break;
-
         case 'my':      handleMyList($chatId, $userId); break;
-
         case 'remove':  handleRemoveChannel($chatId, $userId, (string)$arg); break;
-
         case 'history': handleHistory($chatId, $userId, (string)$arg); break;
 
         case 'khatms':

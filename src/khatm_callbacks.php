@@ -2,11 +2,6 @@
 // src/khatm_callbacks.php
 declare(strict_types=1);
 
-function sendSpecialMenu($chatId, $messageId = null): void {
-    $inlineKeyboard = [[['text'=>'📿 ختم‌های کانال','callback_data'=>'khatm_menu']]];
-    editOrSend($chatId, $messageId, "✨ قابلیت‌های ویژه\n\nاز بین گزینه‌های زیر انتخاب کنید:", ['inline_keyboard'=>$inlineKeyboard]);
-}
-
 function sendKhatmMenu($chatId, $userId, $messageId = null): void {
     $rows = [];
     if (!empty(getOwnerChannels($userId))) {
@@ -16,7 +11,7 @@ function sendKhatmMenu($chatId, $userId, $messageId = null): void {
         $rows[] = [['text'=>'⚠️ ابتدا یک کانال متصل کنید','callback_data'=>'menu_connect']];
         if (isBotOwner($userId)) $rows[] = [['text'=>'🗂 مدیریت ختم‌ها (ریست / حذف)','callback_data'=>'khatm_manage']];
     }
-    $rows[] = [['text'=>'🔙 بازگشت','callback_data'=>'special_menu']];
+    $rows[] = [['text'=>'🔙 بازگشت به منوی اصلی','callback_data'=>'main_menu']];
     editOrSend($chatId, $messageId, "📿 بخش ختم‌های کانال\n\nیک گزینه را انتخاب کنید:", ['inline_keyboard'=>$rows]);
 }
 
@@ -30,8 +25,7 @@ function handleKhatmCallback(array $cb): void {
 
     if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
 
-    if ($data === 'special_menu') { answerCallbackQuery($cbId); sendSpecialMenu($chatId, $messageId); return; }
-    if ($data === 'khatm_menu')    { answerCallbackQuery($cbId); sendKhatmMenu($chatId, $userIdStr, $messageId); return; }
+    if ($data === 'khatm_menu') { answerCallbackQuery($cbId); sendKhatmMenu($chatId, $userIdStr, $messageId); return; }
 
     if ($data === 'khatm_create') {
         answerCallbackQuery($cbId);

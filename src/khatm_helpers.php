@@ -61,7 +61,7 @@ function buildKhatmPrivateKeyboard(array $khatm): array {
 }
 
 function khatmCancelKeyboard(): array { return ['inline_keyboard'=>[[['text'=>'❌ انصراف','callback_data'=>'khatm_cancel']]]]; }
-function khatmBackKeyboard(): array { return ['inline_keyboard'=>[[['text'=>'🔙 قابلیت‌های ویژه','callback_data'=>'special_menu']]]]; }
+function khatmBackKeyboard(): array { return ['inline_keyboard'=>[[['text'=>'🔙 بازگشت به منوی اصلی','callback_data'=>'main_menu']]]]; }
 
 function khatmInfoPrompt(?string $error = null): string {
     $text = $error !== null ? "❌ {$error}\n\n" : '';

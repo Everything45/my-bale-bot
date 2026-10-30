@@ -11,11 +11,31 @@ function handleCallbackQuery(array $cb): void {
     $userId = $cb['from']['id'] ?? null;
 
     if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
+    $userIdStr = (string)$userId;
 
-    // ─── ⭐ خروج از چت AI ───
+    // ─── ⭐ بازگشت به منوی اصلی ───
+    if ($data === 'main_menu') {
+        answerCallbackQuery($cbId);
+        $state = getUserState($userIdStr);
+        if ($state !== null && strpos($state, 'khatm_') === 0) {
+            clearUserState($userIdStr);
+        }
+        sendStartMenu($chatId);
+        return;
+    }
+
+    // ─── خروج از لینک ناشناس ───
+    if ($data === 'anon_exit') {
+        clearUserState($userIdStr);
+        answerCallbackQuery($cbId, 'خارج شدید.');
+        editOrSend($chatId, $messageId, "✅ از حالت پیام ناشناس خارج شدید.", ['inline_keyboard' => []]);
+        return;
+    }
+
+    // ─── خروج از چت AI ───
     if ($data === 'ai_exit') {
-        clearUserState((string)$userId);
-        clearAiChatHistory((string)$userId);
+        clearUserState($userIdStr);
+        clearAiChatHistory($userIdStr);
         answerCallbackQuery($cbId, 'از چت AI خارج شدید.');
         editOrSend($chatId, $messageId, "✅ از چت AI خارج شدید.", ['inline_keyboard' => []]);
         return;
@@ -84,7 +104,13 @@ function handleCallbackQuery(array $cb): void {
         $check = checkUserForceJoin($userId, false);
         if ($check['ok']) {
             answerCallbackQuery($cbId, '✅ عضویت تایید شد.', false);
-            sendStartMenu($chatId);
+            $pendingAnon = redisGet("pending_anon:{$userId}");
+            if ($pendingAnon !== null && $pendingAnon !== '') {
+                redisDel("pending_anon:{$userId}");
+                handleAnonStart($chatId, $userId, $pendingAnon);
+            } else {
+                sendStartMenu($chatId);
+            }
         } else {
             answerCallbackQuery($cbId, '❌ هنوز عضو همه‌ی کانال‌ها نشدید.', true);
         }
@@ -92,7 +118,7 @@ function handleCallbackQuery(array $cb): void {
     }
 
     if ($data === 'khatm_cancel') {
-        clearUserState((string)$userId);
+        clearUserState($userIdStr);
         answerCallbackQuery($cbId, 'لغو شد.');
         editOrSend($chatId, $messageId, "❌ ساخت ختم لغو شد.", khatmBackKeyboard());
         return;
@@ -122,8 +148,14 @@ function handleCallbackQuery(array $cb): void {
         }
     }
 
-    if ($data === 'special_menu' || strpos($data, 'khatm_') === 0) {
+    if (strpos($data, 'khatm_') === 0) {
         handleKhatmCallback($cb);
+        return;
+    }
+
+    // ─── لینک ناشناس ───
+    if ($data === 'anon_link' || $data === 'anon_regen' || $data === 'anon_inbox' || $data === 'anon_inbox_clear') {
+        handleAnonCallback($cb);
         return;
     }
 
@@ -132,7 +164,7 @@ function handleCallbackQuery(array $cb): void {
     switch ($data) {
         case 'menu_connect':
             editOrSend($chatId, $messageId, getConnectText(),
-                ['inline_keyboard'=>[[['text'=>'🔙 بازگشت','callback_data'=>'khatm_menu']]]]);
+                ['inline_keyboard'=>[[['text'=>'🔙 بازگشت به منوی اصلی','callback_data'=>'main_menu']]]]);
             break;
         case 'menu_mylist':  handleMyList($chatId, $userId, $messageId); break;
         case 'menu_help':    editOrSend($chatId, $messageId, getHelpText()); break;
