@@ -12,6 +12,15 @@ function handleCallbackQuery(array $cb): void {
 
     if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
 
+    // ─── ⭐ خروج از چت AI ───
+    if ($data === 'ai_exit') {
+        clearUserState((string)$userId);
+        clearAiChatHistory((string)$userId);
+        answerCallbackQuery($cbId, 'از چت AI خارج شدید.');
+        editOrSend($chatId, $messageId, "✅ از چت AI خارج شدید.", ['inline_keyboard' => []]);
+        return;
+    }
+
     if (strpos($data, 'khatm_count:') === 0) {
         $parts = explode(':', $data);
         if (count($parts) !== 3 || !preg_match('/^khatm_[A-Za-z0-9]+$/', $parts[1])) { answerCallbackQuery($cbId); return; }
@@ -71,7 +80,7 @@ function handleCallbackQuery(array $cb): void {
     }
 
     if ($data === 'check_force_join') {
-        clearForceCheckCache($userId);          // ⭐ کش پاک شود تا واقعاً بررسی شود
+        clearForceCheckCache($userId);
         $check = checkUserForceJoin($userId, false);
         if ($check['ok']) {
             answerCallbackQuery($cbId, '✅ عضویت تایید شد.', false);
@@ -105,7 +114,7 @@ function handleCallbackQuery(array $cb): void {
     if ($chatType !== 'private') { answerCallbackQuery($cbId); return; }
 
     if ($data !== 'menu_bug') {
-        $check = checkUserForceJoin($userId, false);   // حالا از کش استفاده می‌کند
+        $check = checkUserForceJoin($userId, false);
         if (!$check['ok']) {
             answerCallbackQuery($cbId, '⚠️ اول تو کانال‌های معرفی‌شده عضو شوید.', true);
             sendForceJoinPrompt($chatId, $check['missing']);

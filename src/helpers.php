@@ -72,6 +72,15 @@ function normalizeChannelRef(string $arg): ?string {
     return '@' . $arg;
 }
 
+/**
+ * ⭐ دریافت اطلاعات یک چت/کاربر با آیدی عددی از API بله
+ */
+function getChatInfoById($chatId): ?array {
+    $res = apiPost('getChat', ['chat_id' => $chatId]);
+    if (!apiOk($res)) return null;
+    return $res['result'] ?? null;
+}
+
 function editOrSend($chatId, $messageId, string $text, ?array $replyMarkup = null): void {
     if ($messageId) {
         $payload = ['chat_id'=>$chatId,'message_id'=>$messageId,'text'=>$text];

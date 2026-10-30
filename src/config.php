@@ -10,8 +10,15 @@ define('REDIS_TOKEN', trim(getenv('UPSTASH_REDIS_REST_TOKEN') ?: ''));
 define('BOT_OWNER_ID', trim(getenv('BOT_OWNER_ID') ?: ''));
 define('WEBHOOK_SECRET', trim(getenv('WEBHOOK_SECRET') ?: ''));
 
+// ─── DeepSeek AI ───
+define('DEEPSEEK_API_KEY', trim(getenv('DEEPSEEK_API_KEY') ?: ''));
+define('DEEPSEEK_API_URL', 'https://api.deepseek.com/chat/completions');
+define('DEEPSEEK_MODEL', 'deepseek-chat');
+define('AI_CHAT_HISTORY_TTL', 3600);   // ۱ ساعت
+define('AI_CHAT_MAX_HISTORY', 20);     // حداکثر ۲۰ پیام متقابل
+
 // ─── کش و throttle ───
-define('FORCE_CHECK_CACHE_TTL', 300);   // ۵ دقیقه: نتیجه موفق عضویت اجباری
+define('FORCE_CHECK_CACHE_TTL', 300);
 define('KHATM_EDIT_THROTTLE_SECONDS', 2);
 define('USER_STATE_TTL', 1800);
 

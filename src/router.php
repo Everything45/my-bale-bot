@@ -20,9 +20,21 @@ function handleTextMessage(array $message): void {
         '📖 راهنمای استفاده' => 'help', '🌟 اسپانسر' => 'sponsor',
         '🌟 اسپانسر ما' => 'sponsor', '🐞 گزارش باگ' => 'bug',
         '✨ قابلیت‌های ویژه' => 'special',
+        '🤖 چت AI' => 'ai',
         '🔙 بازگشت به منوی اصلی' => 'back_to_main'
     ];
 
+    // ─── حالت چت AI ───
+    if ($chatType === 'private' && getUserState($userIdStr) === 'ai_chat') {
+        if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
+            clearUserState($userIdStr);       // از حالت خارج می‌شویم و دستور/دکمه را پردازش می‌کنیم
+        } else {
+            handleAiChat($chatId, $userId, $stateText);
+            return;
+        }
+    }
+
+    // ─── حالت ساخت ختم ───
     if ($chatType === 'private') {
         $userState = getUserState($userIdStr);
         if ($userState !== null && strpos($userState, 'khatm_') === 0) {
@@ -48,6 +60,15 @@ function handleTextMessage(array $message): void {
             case 'sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
             case 'bug':     sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمتن مشکل رو بعد از این دستور بنویسید و بفرستید:\n\n/bug"); break;
             case 'special': sendSpecialMenu($chatId); break;
+            case 'ai':
+                clearAiChatHistory($userIdStr);
+                setUserState($userIdStr, 'ai_chat');
+                sendMessageWithKeyboard(
+                    $chatId,
+                    "🤖 به چت AI خوش آمدید!\n\nهر سوالی دارید بپرسید. برای خروج /end یا دکمه زیر را بزنید.",
+                    ['inline_keyboard' => [[['text' => '❌ خروج از چت AI', 'callback_data' => 'ai_exit']]]]
+                );
+                break;
         }
         return;
     }
@@ -78,22 +99,65 @@ function handleTextMessage(array $message): void {
             }
             sendStartMenu($chatId);
             break;
+
         case 'help':   sendMessageWithKeyboard($chatId, getHelpText()); break;
+
         case 'status':
             $msg = "🤖 ربات آنفالویاب: آنلاین\n🕒 " . date('Y-m-d H:i:s');
             if (isBotOwner($userId)) $msg .= "\n🗄 Redis: ✅\n📦 استخر: " . count(getForceChannelsPool());
             sendMessageWithKeyboard($chatId, $msg);
             break;
+
         case 'add':
         case 'connect': handleConnect($chatId, $userId, (string)$arg, (string)$chatType); break;
+
         case 'my':      handleMyList($chatId, $userId); break;
+
         case 'remove':  handleRemoveChannel($chatId, $userId, (string)$arg); break;
+
         case 'history': handleHistory($chatId, $userId, (string)$arg); break;
+
         case 'khatms':
         case 'khatm':
             if ($chatType !== 'private') { sendMessageWithKeyboard($chatId, "📿 مدیریت ختم‌ها را داخل چت خصوصی ربات انجام دهید."); break; }
             sendKhatmManageList($chatId, $userId);
             break;
+
+        // ─── ⭐ چت AI ───
+        case 'ai':
+            if ($chatType !== 'private') { sendMessageWithKeyboard($chatId, "🤖 چت AI فقط در چت خصوصی ربات در دسترس است."); break; }
+            clearAiChatHistory($userIdStr);
+            setUserState($userIdStr, 'ai_chat');
+            sendMessageWithKeyboard(
+                $chatId,
+                "🤖 به چت AI خوش آمدید!\n\nهر سوالی دارید بپرسید. برای خروج /end یا دکمه زیر را بزنید.",
+                ['inline_keyboard' => [[['text' => '❌ خروج از چت AI', 'callback_data' => 'ai_exit']]]]
+            );
+            break;
+
+        // ─── ⭐ شناسایی آیدی عددی ───
+        case 'id':
+        case 'whois':
+            $targetId = trim((string)$arg);
+            if ($targetId === '') {
+                sendMessageWithKeyboard($chatId, "❌ آیدی عددی را وارد کنید.\n\nمثال:\n/id 123456789");
+                return;
+            }
+            $info = getChatInfoById($targetId);
+            if ($info === null) {
+                sendMessageWithKeyboard($chatId, "❌ کاربری با این آیدی پیدا نشد (یا ربات به آن دسترسی ندارد).");
+                return;
+            }
+            $name = trim(($info['first_name'] ?? '') . ' ' . ($info['last_name'] ?? '')) ?: 'بدون نام';
+            $username = (string)($info['username'] ?? '');
+            $msg = "👤 اطلاعات آیدی {$targetId}:\n\n"
+                 . "📛 نام: {$name}\n"
+                 . "🔖 یوزرنیم: " . ($username !== '' ? '@' . $username : 'ندارد') . "\n"
+                 . "🔢 آیدی عددی: {$targetId}\n"
+                 . "📌 نوع: " . ($info['type'] ?? 'نامشخص');
+            sendMessageWithKeyboard($chatId, $msg);
+            break;
+
         case 'bug':
             if ($arg === '') { sendMessageWithKeyboard($chatId, "❌ متن مشکل رو بعد از bug بنویسید."); return; }
             if (BOT_OWNER_ID === '') { sendMessageWithKeyboard($chatId, "❌ دریافت گزارش غیرفعاله."); return; }
@@ -103,6 +167,7 @@ function handleTextMessage(array $message): void {
             sendPlainText(BOT_OWNER_ID, $bugText);
             sendMessageWithKeyboard($chatId, "✅ گزارش ارسال شد.");
             break;
+
         case 'zk9xad':
             if (!isBotOwner($userId)) return;
             sendMessageWithKeyboard($chatId, getAdminHelpText()); break;

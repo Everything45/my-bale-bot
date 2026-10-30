@@ -10,6 +10,7 @@ require_once __DIR__ . '/../src/redis_khatm.php';
 require_once __DIR__ . '/../src/bale_api.php';
 require_once __DIR__ . '/../src/helpers.php';
 require_once __DIR__ . '/../src/force_join.php';
+require_once __DIR__ . '/../src/ai_chat.php';        // ⭐ جدید
 require_once __DIR__ . '/../src/menus.php';
 require_once __DIR__ . '/../src/channel_helpers.php';
 require_once __DIR__ . '/../src/channel_handlers.php';
