@@ -2,9 +2,9 @@
 // src/anon_link.php
 declare(strict_types=1);
 
-const ANON_RATE_INTERVAL = 30;   // ثانیه بین هر پیام از یک فرستنده
-const ANON_DAILY_LIMIT   = 20;   // حداکثر پیام روزانه از یک فرستنده به یک مالک
-const ANON_MAX_TEXT      = 1000; // حداکثر طول متن
+const ANON_RATE_INTERVAL = 30;
+const ANON_DAILY_LIMIT   = 20;
+const ANON_MAX_TEXT      = 1000;
 
 function getOrCreateAnonLink($userId): string {
     $userIdStr = (string)$userId;
@@ -24,23 +24,44 @@ function getAnonOwnerByCode(string $code): ?string {
     return ($owner !== null && $owner !== '') ? $owner : null;
 }
 
+/**
+ * ⭐ شناسه عددی پایدار برای هر فرستنده نسبت به هر مالک
+ * اولین پیام #1، دومین #2، ...
+ */
+function getAnonTag(string $ownerId, string $senderId): int {
+    $key = "anon_tag:{$ownerId}:{$senderId}";
+    $v = redisGet($key);
+    if ($v !== null && $v !== '') return (int)$v;
+    $n = redisIncrBy($key, 1);
+    return $n > 0 ? $n : 1;
+}
+
+/** ارسال پیام با پشتیبانی از ریپلای */
+function sendAnonBubble($chatId, string $text, array $keyboard, ?int $replyTo = null): ?int {
+    $payload = ['chat_id' => $chatId, 'text' => $text, 'reply_markup' => $keyboard];
+    if ($replyTo !== null && $replyTo > 0) $payload['reply_to_message_id'] = $replyTo;
+    $res = apiPost('sendMessage', $payload);
+    if (apiOk($res) && isset($res['result']['message_id'])) return (int)$res['result']['message_id'];
+    return null;
+}
+
 function sendAnonMenu($chatId, $userId, $messageId = null): void {
     $code = getOrCreateAnonLink($userId);
     $botUsername = getBotUsername();
     if (!$botUsername) {
-        editOrSend($chatId, $messageId, "❌ خطا در شناسایی ربات. بعداً دوباره تلاش کنید.");
+        editOrSend($chatId, $messageId, "❌ خطا. بعداً تلاش کنید.");
         return;
     }
     $link = "https://ble.ir/{$botUsername}?start=anon_{$code}";
     $text = "🔗 لینک ناشناس شما:\n\n{$link}\n\n"
-          . "این لینک را هر جا خواستید بفرستید. هر کسی آن را باز کند، می‌تواند بدون فاش شدن هویت به شما پیام بدهد.\n\n"
-          . "💡 به هر پیام دریافتی، دکمه «📝 پاسخ» زیر آن نمایش داده می‌شود. با زدن آن، می‌توانید ناشناس پاسخ دهید.\n\n"
-          . "⚠️ محدودیت فرستنده: هر " . ANON_RATE_INTERVAL . " ثانیه یک پیام، حداکثر " . ANON_DAILY_LIMIT . " پیام در روز.";
+          . "این لینک را هر جا بفرستید. هر کسی می‌تواند ناشناس پیام بدهد.\n\n"
+          . "💡 به هر پیام دکمه «📝 پاسخ» چسبیده است.\n"
+          . "⚠️ هر فرستنده: " . ANON_RATE_INTERVAL . " ثانیه بین پیام‌ها، " . ANON_DAILY_LIMIT . " پیام در روز.";
 
     editOrSend($chatId, $messageId, $text, [
         'inline_keyboard' => [
-            [['text' => '🔄 ساخت لینک جدید', 'callback_data' => 'anon_regen']],
-            [['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'main_menu']],
+            [['text' => '🔄 لینک جدید', 'callback_data' => 'anon_regen']],
+            [['text' => '🔙 منوی اصلی', 'callback_data' => 'main_menu']],
         ]
     ]);
 }
@@ -71,19 +92,22 @@ function handleAnonCallback(array $cb): void {
         return;
     }
 
-    // ─── ⭐ دکمه پاسخ: کاربر وارد حالت پاسخ می‌شود ───
+    // ─── ⭐ دکمه پاسخ — ذخیره messageId پیام اصلی برای ریپلای ───
     if (strpos($data, 'anon_reply:') === 0) {
         $targetId = substr($data, strlen('anon_reply:'));
         if (!preg_match('/^\d+$/', $targetId) || (string)$targetId === $userIdStr) {
             answerCallbackQuery($cbId, '❌ مقصد نامعتبر.', true);
             return;
         }
-        setUserState($userIdStr, 'anon_reply', ['target_id' => $targetId]);
+        setUserState($userIdStr, 'anon_reply', [
+            'target_id' => $targetId,
+            'reply_to'  => (string)$messageId,   // ⭐ پیام اصلی در چت خودم
+        ]);
         answerCallbackQuery($cbId, '📝 پاسخ خود را بنویسید...');
         sendMessageWithKeyboard(
             $chatId,
-            "📝 حالت پاسخ فعال شد.\n\nمتن پاسخ خود را بنویسید. پاسخ شما به صورت ناشناس ارسال می‌شود.\n\n💡 برای لغو /start را بزنید.",
-            ['inline_keyboard' => [[['text' => '❌ لغو پاسخ', 'callback_data' => 'anon_reply_cancel']]]]
+            "📝 پاسخ خود را بنویسید. ناشناس ارسال می‌شود.",
+            ['inline_keyboard' => [[['text' => '❌ لغو', 'callback_data' => 'anon_reply_cancel']]]]
         );
         return;
     }
@@ -98,9 +122,6 @@ function handleAnonCallback(array $cb): void {
     answerCallbackQuery($cbId);
 }
 
-/**
- * پردازش /start anon_XXX
- */
 function handleAnonStart($chatId, $senderId, string $code): void {
     $ownerId = getAnonOwnerByCode($code);
     if ($ownerId === null) {
@@ -108,44 +129,46 @@ function handleAnonStart($chatId, $senderId, string $code): void {
         return;
     }
     if ((string)$senderId === (string)$ownerId) {
-        sendMessageWithKeyboard($chatId, "🔗 این لینک خودتان است.\n\nبرای دیدن/ساخت لینک، از «🔗 لینک ناشناس من» استفاده کنید.");
+        sendMessageWithKeyboard($chatId, "🔗 این لینک خودتان است.");
         return;
     }
     setUserState((string)$senderId, 'anon_send', ['owner_id' => $ownerId]);
     sendMessageWithKeyboard(
         $chatId,
-        "🕵️ شما در حالت پیام ناشناس هستید.\n\nپیام خود را بفرستید؛ هویت شما برای مالک لینک فاش نمی‌شود.\n\n⚠️ محدودیت: هر " . ANON_RATE_INTERVAL . " ثانیه یک پیام، حداکثر " . ANON_DAILY_LIMIT . " پیام در روز.",
+        "🕵️ حالت ناشناس فعال.\n\nپیام خود را بفرستید. هویت شما فاش نمی‌شود.\n\n"
+        . "⚠️ " . ANON_RATE_INTERVAL . " ثانیه بین پیام‌ها، " . ANON_DAILY_LIMIT . " پیام در روز.",
         ['inline_keyboard' => [[['text' => '❌ خروج', 'callback_data' => 'anon_exit']]]]
     );
 }
 
 /**
- * فرستنده پیام می‌فرستد → به مالک با دکمه پاسخ می‌رسد
+ * ⭐ فرستنده پیام می‌فرستد — شناسه عددی می‌گیرد
+ * $userMsgId = message_id پیام user (برای ریپلای پاسخ‌های بعدی)
  */
-function handleAnonSend($chatId, $senderId, string $text): void {
+function handleAnonSend($chatId, $senderId, string $text, int $userMsgId = 0): void {
     $senderIdStr = (string)$senderId;
     $data = getUserStateData($senderIdStr);
     $ownerId = (string)($data['owner_id'] ?? '');
 
     if ($ownerId === '') {
         clearUserState($senderIdStr);
-        sendMessageWithKeyboard($chatId, "❌ خطا. لطفاً دوباره از لینک ناشناس شروع کنید.");
+        sendMessageWithKeyboard($chatId, "❌ خطا. از لینک ناشناس دوباره شروع کنید.");
         return;
     }
 
     $text = trim($text);
     if ($text === '') {
-        sendMessageWithKeyboard($chatId, "❌ پیام خالی است. متن خود را بفرستید.");
+        sendMessageWithKeyboard($chatId, "❌ پیام خالی است.");
         return;
     }
     if (mb_strlen($text) > ANON_MAX_TEXT) {
-        sendMessageWithKeyboard($chatId, "❌ پیام طولانی است (حداکثر " . ANON_MAX_TEXT . " کاراکتر).");
+        sendMessageWithKeyboard($chatId, "❌ حداکثر " . ANON_MAX_TEXT . " کاراکتر.");
         return;
     }
 
     $rlKey = "anon_rl:{$senderIdStr}:{$ownerId}";
     if (redisGet($rlKey) !== null) {
-        sendMessageWithKeyboard($chatId, "⏳ لطفاً " . ANON_RATE_INTERVAL . " ثانیه صبر کنید و بعد پیام بعدی را بفرستید.");
+        sendMessageWithKeyboard($chatId, "⏳ " . ANON_RATE_INTERVAL . " ثانیه صبر کنید.");
         return;
     }
 
@@ -153,18 +176,26 @@ function handleAnonSend($chatId, $senderId, string $text): void {
     $dailyRaw = redisGet($dailyKey);
     $dailyCount = $dailyRaw !== null ? (int)$dailyRaw : 0;
     if ($dailyCount >= ANON_DAILY_LIMIT) {
-        sendMessageWithKeyboard($chatId, "⚠️ سهمیه پیام روزانه شما به پایان رسیده است. فردا دوباره تلاش کنید.");
+        sendMessageWithKeyboard($chatId, "⚠️ سهمیه روزانه تمام شد. فردا تلاش کنید.");
         return;
     }
 
-    // ⭐ ارسال به مالک + دکمه شیشه‌ای «📝 پاسخ»
-    $sent = sendMessageWithKeyboard(
+    // ⭐ شناسه عددی پایدار
+    $tag = getAnonTag($ownerId, $senderIdStr);
+
+    // ⭐ ذخیره messageId آخرین پیام user برای ریپلای در چت خودش
+    if ($userMsgId > 0) {
+        redisSet("anon_lastusermsg:{$ownerId}:{$senderIdStr}", (string)$userMsgId, 604800);
+    }
+
+    // ⭐ ارسال به مالک با شناسه عددی + دکمه پاسخ
+    $sent = sendAnonBubble(
         $ownerId,
-        "📩 پیام ناشناس\n\n" . $text,
+        "📩 پیام ناشناس #{$tag}\n\n{$text}",
         ['inline_keyboard' => [[['text' => '📝 پاسخ', 'callback_data' => "anon_reply:{$senderIdStr}"]]]]
     );
     if ($sent === null) {
-        sendMessageWithKeyboard($chatId, "❌ ارسال ناموفق بود. کمی بعد دوباره تلاش کنید.");
+        sendMessageWithKeyboard($chatId, "❌ ارسال ناموفق. دوباره تلاش کنید.");
         return;
     }
 
@@ -173,50 +204,61 @@ function handleAnonSend($chatId, $senderId, string $text): void {
 
     sendMessageWithKeyboard(
         $chatId,
-        "✅ پیام شما به صورت ناشناس ارسال شد.\n\nپیام دیگری بفرستید یا خارج شوید.",
+        "✅ ارسال شد. پیام دیگری بفرستید یا خارج شوید.",
         ['inline_keyboard' => [[['text' => '❌ خروج', 'callback_data' => 'anon_exit']]]]
     );
 }
 
 /**
- * مالک پاسخ می‌دهد → به فرستنده با دکمه پاسخ می‌رسد
+ * ⭐ مالک پاسخ می‌دهد — با ریپلای واقعی به پیام اصلی در هر دو طرف
  */
 function handleAnonReply($chatId, $userId, string $text): void {
     $userIdStr = (string)$userId;
     $data = getUserStateData($userIdStr);
     $targetId = (string)($data['target_id'] ?? '');
+    $replyToOwner = (int)($data['reply_to'] ?? 0);
 
     if ($targetId === '') {
         clearUserState($userIdStr);
-        sendMessageWithKeyboard($chatId, "❌ خطا. لطفاً دوباره از دکمه «📝 پاسخ» استفاده کنید.");
+        sendMessageWithKeyboard($chatId, "❌ خطا. از دکمه «📝 پاسخ» دوباره شروع کنید.");
         return;
     }
 
     $text = trim($text);
     if ($text === '') {
-        sendMessageWithKeyboard($chatId, "❌ پاسخ خالی است. متن پاسخ را بنویسید.");
+        sendMessageWithKeyboard($chatId, "❌ پاسخ خالی است.");
         return;
     }
     if (mb_strlen($text) > ANON_MAX_TEXT) {
-        sendMessageWithKeyboard($chatId, "❌ پاسخ طولانی است (حداکثر " . ANON_MAX_TEXT . " کاراکتر).");
+        sendMessageWithKeyboard($chatId, "❌ حداکثر " . ANON_MAX_TEXT . " کاراکتر.");
         return;
     }
 
-    // ⭐ ارسال پاسخ به فرستنده + دکمه «📝 پاسخ» برای ادامه
-    $sent = sendMessageWithKeyboard(
+    // ⭐ شناسه عددی همان فرستنده (همان #N که در پیام اصلی دیده)
+    $tag = getAnonTag($userIdStr, $targetId);
+
+    // ⭐ messageId آخرین پیام user در چت خودش (برای ریپلای در سمت sender)
+    $replyToSender = (int)(redisGet("anon_lastusermsg:{$userIdStr}:{$targetId}") ?? 0);
+
+    // ⭐ ارسال پاسخ به sender با ریپلای به پیام خودش
+    $sent = sendAnonBubble(
         $targetId,
-        "📬 پاسخ ناشناس\n\n" . $text,
-        ['inline_keyboard' => [[['text' => '📝 پاسخ', 'callback_data' => "anon_reply:{$userIdStr}"]]]]
+        "📬 پاسخ #{$tag}\n\n{$text}",
+        ['inline_keyboard' => [[['text' => '📝 پاسخ', 'callback_data' => "anon_reply:{$userIdStr}"]]]],
+        $replyToSender > 0 ? $replyToSender : null
     );
     if ($sent === null) {
-        sendMessageWithKeyboard($chatId, "❌ ارسال ناموفق بود. کمی بعد دوباره تلاش کنید.");
+        sendMessageWithKeyboard($chatId, "❌ ارسال ناموفق. دوباره تلاش کنید.");
         return;
     }
 
-    clearUserState($userIdStr);
-    sendMessageWithKeyboard(
+    // ⭐ ثبت پاسخ در چت خود مالک با ریپلای به پیام اصلی
+    sendAnonBubble(
         $chatId,
-        "✅ پاسخ شما به صورت ناشناس ارسال شد.\n\n💡 اگر طرف مقابل پاسخ دهد، پیامش با دکمه «📝 پاسخ» برای شما می‌آید.",
-        ['inline_keyboard' => [[['text' => '🏠 منوی اصلی', 'callback_data' => 'main_menu']]]]
+        "✅ پاسخ #{$tag} ارسال شد.",
+        ['inline_keyboard' => [[['text' => '🏠 منوی اصلی', 'callback_data' => 'main_menu']]]],
+        $replyToOwner > 0 ? $replyToOwner : null
     );
+
+    clearUserState($userIdStr);
 }
