@@ -36,12 +36,22 @@ function handleTextMessage(array $message): void {
         }
     }
 
-    // ─── حالت ارسال پیام ناشناس ───
+    // ─── حالت ارسال پیام ناشناس (فرستنده) ───
     if ($chatType === 'private' && getUserState($userIdStr) === 'anon_send') {
         if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
             clearUserState($userIdStr);
         } else {
             handleAnonSend($chatId, $userId, $stateText);
+            return;
+        }
+    }
+
+    // ─── ⭐ حالت پاسخ به پیام ناشناس (مالک) ───
+    if ($chatType === 'private' && getUserState($userIdStr) === 'anon_reply') {
+        if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
+            clearUserState($userIdStr);
+        } else {
+            handleAnonReply($chatId, $userId, $stateText);
             return;
         }
     }
@@ -71,7 +81,6 @@ function handleTextMessage(array $message): void {
             case 'help':    sendMessageWithKeyboard($chatId, getHelpText()); break;
             case 'sponsor': sendMessageWithKeyboard($chatId, "🌟 اسپانسر ربات:\n\n" . getSponsorText()); break;
             case 'bug':     sendMessageWithKeyboard($chatId, "🐞 گزارش باگ\n\nمتن مشکل رو بعد از این دستور بنویسید و بفرستید:\n\n/bug"); break;
-            // ⭐ ختم‌ها — مستقیم از منوی اصلی
             case 'khatm':
                 if ($chatType !== 'private') { sendMessageWithKeyboard($chatId, "📿 مدیریت ختم‌ها را داخل چت خصوصی ربات انجام دهید."); break; }
                 sendKhatmMenu($chatId, $userId);
@@ -106,7 +115,6 @@ function handleTextMessage(array $message): void {
     [$cmd, $arg] = parseCommand($text);
     if ($cmd === null) return;
 
-    // /start anon_XXX
     if ($cmd === 'start' && strpos((string)$arg, 'anon_') === 0) {
         if ($chatType !== 'private') {
             sendMessageWithKeyboard($chatId, "❌ لینک ناشناس فقط در چت خصوصی ربات کار می‌کند.");
