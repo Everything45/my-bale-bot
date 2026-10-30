@@ -74,12 +74,12 @@ function handleAnonCallback(array $cb): void {
     // ─── ⭐ دکمه پاسخ: کاربر وارد حالت پاسخ می‌شود ───
     if (strpos($data, 'anon_reply:') === 0) {
         $targetId = substr($data, strlen('anon_reply:'));
-        if (!preg_match('/^\d+$/', $targetId)) {
+        if (!preg_match('/^\d+$/', $targetId) || (string)$targetId === $userIdStr) {
             answerCallbackQuery($cbId, '❌ مقصد نامعتبر.', true);
             return;
         }
         setUserState($userIdStr, 'anon_reply', ['target_id' => $targetId]);
-        answerCallbackQuery($cbId);
+        answerCallbackQuery($cbId, '📝 پاسخ خود را بنویسید...');
         sendMessageWithKeyboard(
             $chatId,
             "📝 حالت پاسخ فعال شد.\n\nمتن پاسخ خود را بنویسید. پاسخ شما به صورت ناشناس ارسال می‌شود.\n\n💡 برای لغو /start را بزنید.",
