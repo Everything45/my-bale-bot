@@ -5,7 +5,6 @@ declare(strict_types=1);
 const ANON_RATE_INTERVAL = 30;   // ثانیه بین هر پیام از یک فرستنده
 const ANON_DAILY_LIMIT   = 20;   // حداکثر پیام روزانه از یک فرستنده به یک مالک
 const ANON_MAX_TEXT      = 1000; // حداکثر طول متن
-const ANON_INBOX_MAX     = 100;  // حداکثر پیام‌های ذخیره‌شده برای صندوق هر کاربر
 
 function getOrCreateAnonLink($userId): string {
     $userIdStr = (string)$userId;
@@ -25,37 +24,6 @@ function getAnonOwnerByCode(string $code): ?string {
     return ($owner !== null && $owner !== '') ? $owner : null;
 }
 
-/**
- * ذخیره پیام دریافتی — با شناسه یکتا برای پاسخ امن (جلوگیری از race condition)
- */
-function saveAnonReceivedMessage($ownerId, string $text, $senderId): void {
-    $record = [
-        'id' => bin2hex(random_bytes(4)),  // 8 char hex — شناسه‌ی پایدار
-        'text' => $text,
-        'time' => date('Y/m/d - H:i'),
-        'sender_id' => (string)$senderId,
-    ];
-    redisLPushTrim("anon_inbox:{$ownerId}", json_encode($record, JSON_UNESCAPED_UNICODE), ANON_INBOX_MAX);
-}
-
-function getAnonInbox($ownerId): array {
-    $raw = redisLRange("anon_inbox:{$ownerId}", 0, ANON_INBOX_MAX - 1);
-    $result = [];
-    foreach ($raw as $item) {
-        if (is_array($item)) { $result[] = $item; continue; }
-        $decoded = json_decode((string)$item, true);
-        if (is_array($decoded)) $result[] = $decoded;
-    }
-    return $result;
-}
-
-function findAnonInboxMessage($ownerId, string $msgId): ?array {
-    foreach (getAnonInbox($ownerId) as $item) {
-        if (($item['id'] ?? '') === $msgId) return $item;
-    }
-    return null;
-}
-
 function sendAnonMenu($chatId, $userId, $messageId = null): void {
     $code = getOrCreateAnonLink($userId);
     $botUsername = getBotUsername();
@@ -64,56 +32,17 @@ function sendAnonMenu($chatId, $userId, $messageId = null): void {
         return;
     }
     $link = "https://ble.ir/{$botUsername}?start=anon_{$code}";
-    $inboxCount = count(getAnonInbox($userId));
-
-    $text = "🔗 لینک ناشناس شما آماده است!\n\n"
+    $text = "🔗 لینک ناشناس شما:\n\n{$link}\n\n"
           . "این لینک را هر جا خواستید بفرستید. هر کسی آن را باز کند، می‌تواند بدون فاش شدن هویت به شما پیام بدهد.\n\n"
-          . "📎 لینک شما:\n{$link}\n\n"
-          . "📬 پیام‌های دریافتی: {$inboxCount}\n\n"
-          . "⚠️ محدودیت‌ها برای هر فرستنده:\n"
-          . "• حداقل " . ANON_RATE_INTERVAL . " ثانیه بین هر پیام\n"
-          . "• حداکثر " . ANON_DAILY_LIMIT . " پیام در روز\n\n"
-          . "💡 با دکمه «ساخت لینک جدید» می‌توانید لینک قبلی را غیرفعال و لینک تازه بسازید:";
+          . "💡 به هر پیام دریافتی، دکمه «📝 پاسخ» زیر آن نمایش داده می‌شود. با زدن آن، می‌توانید ناشناس پاسخ دهید.\n\n"
+          . "⚠️ محدودیت فرستنده: هر " . ANON_RATE_INTERVAL . " ثانیه یک پیام، حداکثر " . ANON_DAILY_LIMIT . " پیام در روز.";
 
     editOrSend($chatId, $messageId, $text, [
         'inline_keyboard' => [
-            [['text' => '📬 پیام‌های دریافتی', 'callback_data' => 'anon_inbox']],
             [['text' => '🔄 ساخت لینک جدید', 'callback_data' => 'anon_regen']],
             [['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'main_menu']],
         ]
     ]);
-}
-
-function showAnonInbox($chatId, $userId, $messageId = null): void {
-    $inbox = getAnonInbox($userId);
-    if (empty($inbox)) {
-        editOrSend($chatId, $messageId, "📭 هنوز هیچ پیام ناشناسی دریافت نکرده‌اید.",
-            ['inline_keyboard' => [[['text' => '🔙 بازگشت', 'callback_data' => 'anon_link']]]]);
-        return;
-    }
-
-    $total = count($inbox);
-    $shown = array_slice($inbox, 0, 10);
-    $text = "📬 صندوق پیام‌های ناشناس شما\n\n"
-          . "تعداد کل: {$total} پیام\n"
-          . "نمایش آخرین " . count($shown) . " پیام:\n\n";
-
-    $rows = [];
-    foreach ($shown as $idx => $item) {
-        $num = $idx + 1;
-        $txt = mb_substr((string)($item['text'] ?? ''), 0, 120);
-        $text .= "{$num}. {$txt}\n🕒 " . ($item['time'] ?? '') . "\n\n";
-        $msgId = (string)($item['id'] ?? '');
-        if ($msgId !== '') {
-            $rows[] = [['text' => "📝 پاسخ به پیام {$num}", 'callback_data' => "anon_reply:{$msgId}"]];
-        }
-    }
-
-    $rows[] = [['text' => '🔄 بروزرسانی', 'callback_data' => 'anon_inbox']];
-    $rows[] = [['text' => '🗑 پاک کردن صندوق', 'callback_data' => 'anon_inbox_clear']];
-    $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'anon_link']];
-
-    editOrSend($chatId, $messageId, $text, ['inline_keyboard' => $rows]);
 }
 
 function handleAnonCallback(array $cb): void {
@@ -142,38 +71,18 @@ function handleAnonCallback(array $cb): void {
         return;
     }
 
-    if ($data === 'anon_inbox') {
-        answerCallbackQuery($cbId);
-        showAnonInbox($chatId, $userId, $messageId);
-        return;
-    }
-
-    if ($data === 'anon_inbox_clear') {
-        redisDel("anon_inbox:{$userId}");
-        answerCallbackQuery($cbId, '🗑 صندوق پاک شد.');
-        showAnonInbox($chatId, $userId, $messageId);
-        return;
-    }
-
-    // ─── ⭐ پاسخ به پیام ناشناس ───
+    // ─── ⭐ دکمه پاسخ: کاربر وارد حالت پاسخ می‌شود ───
     if (strpos($data, 'anon_reply:') === 0) {
-        $msgId = substr($data, strlen('anon_reply:'));
-        $item = findAnonInboxMessage($userId, $msgId);
-        if ($item === null) {
-            answerCallbackQuery($cbId, '❌ این پیام پیدا نشد.', true);
-            return;
-        }
-        $targetId = (string)($item['sender_id'] ?? '');
-        if ($targetId === '') {
-            answerCallbackQuery($cbId, '❌ این پیام قابل پاسخ نیست.', true);
+        $targetId = substr($data, strlen('anon_reply:'));
+        if (!preg_match('/^\d+$/', $targetId)) {
+            answerCallbackQuery($cbId, '❌ مقصد نامعتبر.', true);
             return;
         }
         setUserState($userIdStr, 'anon_reply', ['target_id' => $targetId]);
         answerCallbackQuery($cbId);
-        editOrSend($chatId, $messageId,
-            "📝 حالت پاسخ فعال شد.\n\n"
-            . "پاسخ شما به صورت ناشناس برای فرستنده ارسال می‌شود. متن پاسخ را بنویسید:\n\n"
-            . "💡 برای لغو، دکمه زیر یا /start را بزنید.",
+        sendMessageWithKeyboard(
+            $chatId,
+            "📝 حالت پاسخ فعال شد.\n\nمتن پاسخ خود را بنویسید. پاسخ شما به صورت ناشناس ارسال می‌شود.\n\n💡 برای لغو /start را بزنید.",
             ['inline_keyboard' => [[['text' => '❌ لغو پاسخ', 'callback_data' => 'anon_reply_cancel']]]]
         );
         return;
@@ -182,7 +91,7 @@ function handleAnonCallback(array $cb): void {
     if ($data === 'anon_reply_cancel') {
         clearUserState($userIdStr);
         answerCallbackQuery($cbId, 'لغو شد.');
-        sendAnonMenu($chatId, $userId, $messageId);
+        sendStartMenu($chatId);
         return;
     }
 
@@ -198,24 +107,20 @@ function handleAnonStart($chatId, $senderId, string $code): void {
         sendMessageWithKeyboard($chatId, "❌ این لینک معتبر نیست یا منقضی شده.");
         return;
     }
-
     if ((string)$senderId === (string)$ownerId) {
         sendMessageWithKeyboard($chatId, "🔗 این لینک خودتان است.\n\nبرای دیدن/ساخت لینک، از «🔗 لینک ناشناس من» استفاده کنید.");
         return;
     }
-
     setUserState((string)$senderId, 'anon_send', ['owner_id' => $ownerId]);
     sendMessageWithKeyboard(
         $chatId,
-        "🕵️ شما در حالت پیام ناشناس هستید.\n\n"
-        . "پیام خود را بفرستید؛ هویت شما برای مالک لینک فاش نمی‌شود.\n\n"
-        . "⚠️ محدودیت: هر " . ANON_RATE_INTERVAL . " ثانیه یک پیام، حداکثر " . ANON_DAILY_LIMIT . " پیام در روز.",
+        "🕵️ شما در حالت پیام ناشناس هستید.\n\nپیام خود را بفرستید؛ هویت شما برای مالک لینک فاش نمی‌شود.\n\n⚠️ محدودیت: هر " . ANON_RATE_INTERVAL . " ثانیه یک پیام، حداکثر " . ANON_DAILY_LIMIT . " پیام در روز.",
         ['inline_keyboard' => [[['text' => '❌ خروج', 'callback_data' => 'anon_exit']]]]
     );
 }
 
 /**
- * پردازش پیام متنی کاربر در حالت anon_send (فرستنده)
+ * فرستنده پیام می‌فرستد → به مالک با دکمه پاسخ می‌رسد
  */
 function handleAnonSend($chatId, $senderId, string $text): void {
     $senderIdStr = (string)$senderId;
@@ -252,13 +157,16 @@ function handleAnonSend($chatId, $senderId, string $text): void {
         return;
     }
 
-    $ok = sendPlainText($ownerId, "📩 پیام ناشناس\n\n" . $text);
-    if (!$ok) {
+    // ⭐ ارسال به مالک + دکمه شیشه‌ای «📝 پاسخ»
+    $sent = sendMessageWithKeyboard(
+        $ownerId,
+        "📩 پیام ناشناس\n\n" . $text,
+        ['inline_keyboard' => [[['text' => '📝 پاسخ', 'callback_data' => "anon_reply:{$senderIdStr}"]]]]
+    );
+    if ($sent === null) {
         sendMessageWithKeyboard($chatId, "❌ ارسال ناموفق بود. کمی بعد دوباره تلاش کنید.");
         return;
     }
-
-    saveAnonReceivedMessage($ownerId, $text, $senderId);
 
     redisSet($rlKey, '1', ANON_RATE_INTERVAL);
     redisSet($dailyKey, (string)($dailyCount + 1), 86400);
@@ -271,7 +179,7 @@ function handleAnonSend($chatId, $senderId, string $text): void {
 }
 
 /**
- * پردازش پیام متنی در حالت anon_reply (سمت مالک)
+ * مالک پاسخ می‌دهد → به فرستنده با دکمه پاسخ می‌رسد
  */
 function handleAnonReply($chatId, $userId, string $text): void {
     $userIdStr = (string)$userId;
@@ -280,7 +188,7 @@ function handleAnonReply($chatId, $userId, string $text): void {
 
     if ($targetId === '') {
         clearUserState($userIdStr);
-        sendMessageWithKeyboard($chatId, "❌ خطا. لطفاً دوباره از صندوق تلاش کنید.");
+        sendMessageWithKeyboard($chatId, "❌ خطا. لطفاً دوباره از دکمه «📝 پاسخ» استفاده کنید.");
         return;
     }
 
@@ -294,15 +202,13 @@ function handleAnonReply($chatId, $userId, string $text): void {
         return;
     }
 
-    // لینک بازگشت برای ادامه مکالمه توسط فرستنده
-    $botUsername = getBotUsername();
-    $ownerCode = getOrCreateAnonLink($userId);
-    $returnLink = ($botUsername && $ownerCode)
-        ? "\n\n—\n🔗 برای پاسخ، روی این لینک بزنید:\nhttps://ble.ir/{$botUsername}?start=anon_{$ownerCode}"
-        : '';
-
-    $ok = sendPlainText($targetId, "📬 پاسخ پیام ناشناس شما\n\n" . $text . $returnLink);
-    if (!$ok) {
+    // ⭐ ارسال پاسخ به فرستنده + دکمه «📝 پاسخ» برای ادامه
+    $sent = sendMessageWithKeyboard(
+        $targetId,
+        "📬 پاسخ ناشناس\n\n" . $text,
+        ['inline_keyboard' => [[['text' => '📝 پاسخ', 'callback_data' => "anon_reply:{$userIdStr}"]]]]
+    );
+    if ($sent === null) {
         sendMessageWithKeyboard($chatId, "❌ ارسال ناموفق بود. کمی بعد دوباره تلاش کنید.");
         return;
     }
@@ -310,7 +216,7 @@ function handleAnonReply($chatId, $userId, string $text): void {
     clearUserState($userIdStr);
     sendMessageWithKeyboard(
         $chatId,
-        "✅ پاسخ شما به صورت ناشناس برای فرستنده ارسال شد.\n\nپاسخ‌های بعدی این فرستنده در صندوق شما ذخیره می‌شود.",
-        ['inline_keyboard' => [[['text' => '🔙 بازگشت به لینک ناشناس', 'callback_data' => 'anon_link']]]]
+        "✅ پاسخ شما به صورت ناشناس ارسال شد.\n\n💡 اگر طرف مقابل پاسخ دهد، پیامش با دکمه «📝 پاسخ» برای شما می‌آید.",
+        ['inline_keyboard' => [[['text' => '🏠 منوی اصلی', 'callback_data' => 'main_menu']]]]
     );
 }
