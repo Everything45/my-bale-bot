@@ -218,4 +218,4 @@ function handleAnonSend($chatId, $senderId, string $text): void {
         . "پیام دیگری بفرستید یا خارج شوید.",
         ['inline_keyboard' => [[['text' => '❌ خروج', 'callback_data' => 'anon_exit']]]]
     );
-}
+} 
