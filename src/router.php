@@ -37,11 +37,12 @@ function handleTextMessage(array $message): void {
     }
 
     // ─── حالت ارسال پیام ناشناس (فرستنده) ───
+    // ─── حالت ارسال پیام ناشناس (فرستنده) ───
     if ($chatType === 'private' && getUserState($userIdStr) === 'anon_send') {
         if (strpos($text, '/') === 0 || isset($replyButtonMap[$text])) {
             clearUserState($userIdStr);
         } else {
-            handleAnonSend($chatId, $userId, $stateText);
+            handleAnonSend($chatId, $userId, $stateText, (int)($message['message_id'] ?? 0));
             return;
         }
     }
