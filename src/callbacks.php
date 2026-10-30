@@ -13,7 +13,7 @@ function handleCallbackQuery(array $cb): void {
     if (!$chatId || !$userId) { answerCallbackQuery($cbId); return; }
     $userIdStr = (string)$userId;
 
-    // ─── ⭐ بازگشت به منوی اصلی ───
+    // ─── 1. بازگشت به منوی اصلی ───
     if ($data === 'main_menu') {
         answerCallbackQuery($cbId);
         $state = getUserState($userIdStr);
@@ -24,7 +24,7 @@ function handleCallbackQuery(array $cb): void {
         return;
     }
 
-    // ─── خروج از لینک ناشناس ───
+    // ─── 2. خروج از لینک ناشناس ───
     if ($data === 'anon_exit') {
         clearUserState($userIdStr);
         answerCallbackQuery($cbId, 'خارج شدید.');
@@ -32,7 +32,7 @@ function handleCallbackQuery(array $cb): void {
         return;
     }
 
-    // ─── خروج از چت AI ───
+    // ─── 3. خروج از چت AI ───
     if ($data === 'ai_exit') {
         clearUserState($userIdStr);
         clearAiChatHistory($userIdStr);
@@ -41,6 +41,13 @@ function handleCallbackQuery(array $cb): void {
         return;
     }
 
+    // ─── 4. ⭐ همه callback های لینک ناشناس — قبل از force join تا همیشه کار کند ───
+    if (strpos($data, 'anon_') === 0) {
+        handleAnonCallback($cb);
+        return;
+    }
+
+    // ─── 5. شمارش ختم ───
     if (strpos($data, 'khatm_count:') === 0) {
         $parts = explode(':', $data);
         if (count($parts) !== 3 || !preg_match('/^khatm_[A-Za-z0-9]+$/', $parts[1])) { answerCallbackQuery($cbId); return; }
@@ -150,12 +157,6 @@ function handleCallbackQuery(array $cb): void {
 
     if (strpos($data, 'khatm_') === 0) {
         handleKhatmCallback($cb);
-        return;
-    }
-
-    // ─── لینک ناشناس ───
-    if ($data === 'anon_link' || $data === 'anon_regen' || $data === 'anon_inbox' || $data === 'anon_inbox_clear') {
-        handleAnonCallback($cb);
         return;
     }
 
