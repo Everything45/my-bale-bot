@@ -56,9 +56,18 @@ function getConnectText(): string {
 
 function getAdminHelpText(): string {
     return "👑 پنل مدیریت (مخصوص مالک)👑\n\n"
-         . "📊 مشاهده\n/zk9xch - کل کانال‌ها\n/zk9xfl - استخر عضویت اجباری\n"
-         . "/zk9xst - دیباگ استخر\n/zk9xkl - لیست همه‌ی ختم‌ها\n\n"
-         . "⚙️ تنظیمات\n/zk9xfa mychannel - افزودن به استخر\n/zk9xfd mychannel - حذف از استخر\n"
-         . "/zk9xsp text - تنظیم متن اسپانسر\n/zk9xkr khatm_id - ریست ختم\n/zk9xkd khatm_id - حذف ختم\n\n"
+         . "📊 مشاهده\n"
+         . "/zk9xch - کل کانال‌ها\n"
+         . "/zk9xfl - استخر عضویت اجباری\n"
+         . "/zk9xst - دیباگ استخر\n"
+         . "/zk9xkl - لیست همه‌ی ختم‌ها\n\n"
+         . "⚙️ کانال‌ها\n"
+         . "/zk9xfa mychannel - افزودن به استخر\n"
+         . "/zk9xfd mychannel - حذف از استخر\n"
+         . "/zk9xcd mychannel - حذف کانال از ربات (با اطلاع به مالک)\n\n"
+         . "⚙️ تنظیمات\n"
+         . "/zk9xsp text - تنظیم متن اسپانسر\n"
+         . "/zk9xkr khatm_id - ریست ختم\n"
+         . "/zk9xkd khatm_id - حذف ختم\n\n"
          . "⚠️ این دستورات رو جایی منتشر نکنید. ⚠️";
 }
