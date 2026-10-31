@@ -103,7 +103,8 @@ function handleTextMessage(array $message): void {
                      . "📛 نام: {$fname}\n"
                      . "🔖 یوزرنیم: " . ($uname !== '' ? '@' . $uname : 'ندارد') . "\n"
                      . "🔢 آیدی عددی: {$numId}\n\n"
-                     . "💡 این آیدی عددی را می‌توانید برای اتصال گروه/کانال خصوصی با دستور /add {$numId} استفاده کنید.";
+                     . "💡 این آیدی عددی را می‌توانید برای اتصال گروه/کانال خصوصی با دستور زیر استفاده کنید."
+                     . "🔢 دستور : /add {$numId}\n";
                 sendMessageWithKeyboard($chatId, $msg);
                 break;
             case 'anon':
