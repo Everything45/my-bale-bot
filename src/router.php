@@ -258,6 +258,44 @@ function handleTextMessage(array $message): void {
             }
             sendMessageWithKeyboard($chatId, $msg);
             break;
+        case 'zk9xcd':
+    if (!isBotOwner($userId)) return;
+    if ($arg === '') {
+        sendMessageWithKeyboard($chatId,
+            "❌ آیدی/یوزرنیم/عنوان کانال را بعد از دستور بنویسید.\n\n"
+            . "مثال‌ها:\n"
+            . "/zk9xcd mychannel\n"
+            . "/zk9xcd -1001234567890\n"
+            . "/zk9xcd کانال تست\n\n"
+            . "💡 لیست کامل کانال‌ها: /zk9xch");
+        return;
+    }
+    $realId = findOwnerChannel($userId, (string)$arg) ?? resolveChannelId((string)$arg);
+    if ($realId === null) {
+        sendMessageWithKeyboard($chatId, "❌ کانال پیدا نشد.\n\nآیدی معتبر را از /zk9xch بردارید.");
+        return;
+    }
+    $chOwner = getChannelOwner($realId);
+    if ($chOwner === null) {
+        sendMessageWithKeyboard($chatId, "❌ این کانال در ربات ثبت نیست.");
+        return;
+    }
+    $chInfo = getChannelInfo($realId);
+    $chName = ($chInfo['title'] ?? '') ?: $realId;
+    removeChannel($realId);
+
+    // ⭐ اطلاع به مالک کانال (کاربری که کانال را متصل کرده)
+    sendPlainText(
+        $chOwner,
+        "⚠️ کانال «{$chName}» توسط مدیر ربات از لیست حذف شد.\n\n"
+        . "💡 اگر مایل به اتصال مجدد هستید، ربات را ادمین کنید و /add بزنید."
+    );
+
+    sendMessageWithKeyboard($chatId,
+        "🗑 کانال «{$chName}» حذف شد.\n"
+        . "👤 مالک: {$chOwner}\n"
+        . "✅ پیام اطلاع‌رسانی برای مالک ارسال شد.");
+    break;
         case 'zk9xkr':
         case 'zk9xkd':
             if (!isBotOwner($userId)) return;
